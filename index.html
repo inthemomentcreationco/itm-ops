@@ -2190,18 +2190,23 @@ function renderFinancials() {
   // Merge HB historical + live events (prefer live if same id exists)
   const liveIds    = new Set(liveEvents.map(e => e.id));
   const hbRows     = allHist.filter(r => !liveIds.has(r.id));
-  const liveRows   = liveEvents.map(e => ({
-    id:          e.id,
-    date:        e.eventDate || '',
-    client:      e.client,
-    eventType:   e.eventType || '',
-    grossAmount: (e.contractValue||0) + (e.travelFee||0),
-    deposit:     e.deposit || 0,
-    balanceDue:  e.balance || 0,
-    paid:        (e.balance||0) === 0 && (e.deposit||0) > 0,
-    source:      'live',
-    _live:       e,
-  }));
+  const hbById     = Object.fromEntries(allHist.map(r => [r.id, r]));
+  const liveRows   = liveEvents.map(e => {
+    const fin = hbById[e.id] || {};
+    return ({
+    id:            e.id,
+    date:          e.eventDate || '',
+    client:        e.client,
+    eventType:     e.eventType || '',
+    grossAmount:   (e.contractValue||0) + (e.travelFee||0),
+    deposit:       e.deposit || 0,
+    balanceDue:    e.balance || 0,
+    paid:          (e.balance||0) === 0 && (e.deposit||0) > 0,
+    contractorPay: parseFloat(fin.contractorPay)||0,
+    contractorPay2:parseFloat(fin.contractorPay2)||0,
+    source:        'live',
+    _live:         e,
+  });});
   const allRows    = [...liveRows, ...hbRows];
   const yearRows   = allRows.filter(r => { const d = r.date||r.eventDate||''; return d && new Date(d).getFullYear() === thisYear; });
   const sortedYear = [...yearRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
