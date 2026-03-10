@@ -2208,7 +2208,7 @@ function renderFinancials() {
 
   // ── YEAR STATS ──
   const grossRev   = yearRows.reduce((s,r) => s + (r.grossAmount||0), 0);
-  const contrCost  = payments.filter(p => { const d=p.date||''; return d && new Date(d).getFullYear()===thisYear; }).reduce((s,p) => s+(parseFloat(p.amount)||0), 0);
+  const contrCost  = yearRows.reduce((s,r) => s + (parseFloat(r.contractorPay)||0) + (parseFloat(r.contractorPay2)||0), 0);
   const expTotal   = expenses.filter(ex => { const d=ex.date||''; return d && new Date(d).getFullYear()===thisYear; }).reduce((s,ex) => s+(parseFloat(ex.amount)||0), 0);
   const netRev     = grossRev - contrCost - expTotal;
   const taxAside   = netRev * FIN.taxRate;
@@ -2805,12 +2805,12 @@ async function importHoneyBook() {
 // Helper functions for calculators
 function avgNetPerEventCalc() {
   const events   = DATA.events || [];
-  const payments = DATA.payments || [];
+  const hist     = DATA.historicalEvents || [];
   const year     = new Date().getFullYear();
   const ye = events.filter(e => e.eventDate && new Date(e.eventDate).getFullYear()===year);
   if (!ye.length) return 0;
   const rev    = ye.reduce((s,e)=>s+(e.contractValue||0)+(e.travelFee||0),0);
-  const cost   = payments.filter(p=>p.date&&new Date(p.date).getFullYear()===year).reduce((s,p)=>s+p.amount,0);
+  const cost   = hist.filter(r=>r.date&&new Date(r.date).getFullYear()===year).reduce((s,r)=>s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0),0);
   return (rev-cost)/ye.length;
 }
 function avgPerEventCalc() {
@@ -2823,10 +2823,10 @@ function avgPerEventCalc() {
 function takeHomeCalc() {
   loadFin();
   const events   = DATA.events||[];
-  const payments = DATA.payments||[];
+  const hist     = DATA.historicalEvents||[];
   const year     = new Date().getFullYear();
   const grossRev = events.filter(e=>e.eventDate&&new Date(e.eventDate).getFullYear()===year).reduce((s,e)=>s+(e.contractValue||0)+(e.travelFee||0),0);
-  const cost     = payments.filter(p=>p.date&&new Date(p.date).getFullYear()===year).reduce((s,p)=>s+p.amount,0);
+  const cost     = hist.filter(r=>r.date&&new Date(r.date).getFullYear()===year).reduce((s,r)=>s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0),0);
   const net      = grossRev - cost - FIN.annualExpenses;
   return net - (net * FIN.taxRate);
 }
