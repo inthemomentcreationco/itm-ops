@@ -939,9 +939,10 @@ async function syncData() {
   }
 
   // 2. Load events, payments, assignments from Apps Script
+  let finData = [];
   if (CFG.scriptUrl) {
     try {
-      const [events, payments, assignments, availability, finData, expenses] = await Promise.all([
+      const [events, payments, assignments, availability, finDataResult, expenses] = await Promise.all([
         apiCall('getEvents'),
         apiCall('getPayments'),
         apiCall('getAssignments'),
@@ -949,6 +950,7 @@ async function syncData() {
         apiCall('getFinancials'),
         apiCall('getExpenses'),
       ]);
+      finData = finDataResult || [];
 
       // Merge events from Apps Script into DATA.events
       DATA.events = (events || []).map(e => ({
