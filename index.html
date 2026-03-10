@@ -763,12 +763,27 @@ async function apiCall(action, payload) {
   const secret = _secret || getSecret();
   if (!secret) throw new Error('No access secret. Please refresh and enter your password.');
 
-  const res = await fetch(url, {
-    method:      'POST',
-    credentials: 'omit',
-    headers:     { 'Content-Type': 'text/plain' }, // Apps Script requires text/plain for POST
-    body:         JSON.stringify({ secret, action, payload })
-  });
+  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping'];
+  const isRead = readActions.includes(action);
+
+  let res;
+  if (isRead) {
+    const params = new URLSearchParams({ secret, action });
+    if (payload) params.set('payload', JSON.stringify(payload));
+    res = await fetch(url + '?' + params.toString(), {
+      method:      'GET',
+      credentials: 'omit',
+      redirect:    'follow',
+    });
+  } else {
+    res = await fetch(url, {
+      method:      'POST',
+      credentials: 'omit',
+      redirect:    'follow',
+      headers:     { 'Content-Type': 'text/plain' },
+      body:         JSON.stringify({ secret, action, payload })
+    });
+  }
 
   if (!res.ok) throw new Error(`Network error: HTTP ${res.status}`);
   const json = await res.json();
