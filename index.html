@@ -863,6 +863,14 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 async function init() {
+  // Safety net: if still showing "Connecting" after 20s, show error with retry button
+  const connectTimeout = setTimeout(() => {
+    const dash = document.getElementById('dash-content');
+    if (dash && dash.querySelector('.loading')) {
+      dash.innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><div class="empty-msg">Connection timed out.<br><br><button class="btn btn-gold" onclick="init()">↻ Retry</button></div></div>`;
+    }
+  }, 20000);
+
   loadExtendedData();
   if (!CFG.scriptUrl) {
     document.getElementById('setupBanner').style.display = 'block';
@@ -1090,6 +1098,7 @@ async function syncData() {
   saveCfg();
 
   if (inquiriesLoaded) {
+    clearTimeout(connectTimeout);
     btn.className = 'sync-btn connected';
     btn.textContent = `✓ Synced (${DATA.inquiries.length} inquiries)`;
     setTimeout(() => { btn.className = 'sync-btn'; btn.textContent = '↻ Sync'; btn.disabled = false; }, 3000);
@@ -1600,7 +1609,8 @@ function getDoubleBookedDates() {
 }
 
 // ════════════════════════════════ DASHBOARD ════════════════════════════════
-function renderDashboard() {
+function renderDashboard() { try { _renderDashboard(); } catch(e) { console.error('Dashboard render error:', e); document.getElementById('dash-content').innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><div class="empty-msg">Dashboard error: ${e.message}<br><br><button class="btn btn-gold" onclick="syncData()">↻ Retry Sync</button></div></div>`; } }
+function _renderDashboard() {
   autoArchivePastInquiries();
   loadFin();
 
@@ -1736,7 +1746,7 @@ function renderDashboard() {
       <div class="stat-card ${owedContractors>0?'amber':'green'}" style="cursor:pointer" onclick="navigate('financials')">
         <div class="stat-lbl">Owed to Contractors</div>
         <div class="stat-val">$${Math.round(owedContractors).toLocaleString()}</div>
-        <div class="stat-sub">${unpaidPayments.length} unpaid payment${unpaidPayments.length!==1?'s':''}</div>
+        <div class="stat-sub">from past events</div>
       </div>
       <div class="stat-card gold">
         <div class="stat-lbl">${monthName} Revenue</div>
