@@ -407,7 +407,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
     <button class="nav-btn active" onclick="showPage('dashboard')">Dashboard</button>
     <button class="nav-btn" onclick="showPage('inquiries')">Inquiries <span id="inq-dot" style="display:none" class="notif-dot"></span></button>
     <button class="nav-btn" onclick="showPage('events')">Events</button>
-    <button class="nav-btn" onclick="showPage('contractors')">Contractors</button>
+
     <button class="nav-btn" onclick="showPage('financials')">Financials</button>
     <button class="nav-btn" onclick="showPage('calendar')">Calendar</button>
     <button class="nav-btn" onclick="showPage('settings')">Settings</button>
@@ -1672,13 +1672,21 @@ function renderDashboard() {
       return 0; // will show from payments table
     })(), 0);
 
-  // Better: use payments table for unpaid owed to contractors
-  const unpaidPayments = payments.filter(p => !p.venmoSent && !p.paid);
-  const owedContractors = unpaidPayments.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
+  // What Lauren owes contractors — read directly from contractorPay fields in Financials
+  // A contractor is owed if: event is in the past, contractorPay > 0, and not yet marked paid in payments table
+  const paidEventContractorKeys = new Set(payments.filter(p => p.paid || p.venmoSent).map(p => `${p.eventId}_${p.contractorId}`));
+  const owedContractors = allRows.reduce((s, r) => {
+    const isPast = (r.date || r.eventDate || '') < todayStr;
+    if (!isPast) return s;
+    let owed = 0;
+    if (r.contractorName && parseFloat(r.contractorPay) > 0) owed += parseFloat(r.contractorPay);
+    if (r.contractorName2 && parseFloat(r.contractorPay2) > 0) owed += parseFloat(r.contractorPay2);
+    return s + owed;
+  }, 0);
 
-  // Upcoming events (next 60 days) with payment status
+  // Active Events = booked events with future dates
   const upcomingEvents = liveEvents
-    .filter(e => e.eventDate >= todayStr && e.eventDate <= in60Str)
+    .filter(e => (e.eventDate||'') >= todayStr && (e.eventDate||'') <= in60Str)
     .sort((a,b) => a.eventDate.localeCompare(b.eventDate));
 
   const conflictsBanner    = conflicts.length > 0 ? renderConflictsBanner(conflicts, true) : '';
@@ -1707,9 +1715,9 @@ function renderDashboard() {
         <div class="stat-sub">${doubleBooked.length?'same day conflicts':'None ✓'}</div>
       </div>
       <div class="stat-card gold">
-        <div class="stat-lbl">Active Events</div>
-        <div class="stat-val">${liveEvents.length}</div>
-        <div class="stat-sub">${upcomingEvents.length} in next 60 days</div>
+        <div class="stat-lbl">Booked Events</div>
+        <div class="stat-val">${upcomingEvents.length}</div>
+        <div class="stat-sub">in next 60 days</div>
       </div>
     </div>
 
