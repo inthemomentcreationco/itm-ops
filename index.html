@@ -763,7 +763,7 @@ async function apiCall(action, payload) {
   const secret = _secret || getSecret();
   if (!secret) throw new Error('No access secret. Please refresh and enter your password.');
 
-  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping'];
+  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','sendEmail'];
   const isRead = readActions.includes(action);
 
   let res;
