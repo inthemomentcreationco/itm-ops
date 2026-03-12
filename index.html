@@ -407,6 +407,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
     <button class="nav-btn" onclick="showPage('financials')">Financials</button>
     <button class="nav-btn" onclick="showPage('calendar')">Calendar</button>
     <button class="nav-btn" onclick="showPage('settings')">Settings</button>
+    <button class="nav-btn" onclick="showPage('gmail')">✉ Gmail</button>
   </nav>
   <div class="hdr-right">
     <button class="sync-btn" id="syncBtn" onclick="syncData()">↻ Sync Sheet</button>
@@ -684,6 +685,28 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
   </div>
 </div>
 
+<div class="page" id="page-gmail">
+  <div style="display:grid;grid-template-columns:340px 1fr;gap:16px;height:calc(100vh - 120px);overflow:hidden">
+
+    <!-- LEFT: Inbox list -->
+    <div style="display:flex;flex-direction:column;gap:0;overflow:hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 0 12px 0">
+        <div class="card-title" style="margin:0">Inbox</div>
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="loadGmail()">↻ Refresh</button>
+      </div>
+      <div id="gmail-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px">
+        <div class="empty"><div class="empty-icon">✉</div><div class="empty-msg">Click Refresh to load emails</div></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Email detail + reply -->
+    <div id="gmail-detail" style="overflow-y:auto;display:flex;flex-direction:column;gap:12px">
+      <div class="empty" style="margin:auto"><div class="empty-icon">✉</div><div class="empty-msg">Select an email to read and reply</div></div>
+    </div>
+
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -763,7 +786,7 @@ async function apiCall(action, payload) {
   const secret = _secret || getSecret();
   if (!secret) throw new Error('No access secret. Please refresh and enter your password.');
 
-  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','sendEmail'];
+  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','sendEmail','getGmailThreads','getGmailThread','aiGmailDraft'];
   const isRead = readActions.includes(action);
 
   let res;
@@ -2027,8 +2050,8 @@ function openDetail(id) {
         <button class="btn btn-gold" style="font-size:11px" onclick="fillTemplate('${inq.id}','available')">✓ We're Available</button>
         <button class="btn btn-outline" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="fillTemplate('${inq.id}','booked')">✗ We're Booked</button>
       </div>
-      <div class="email-subj" id="email-subj-${inq.id}">Subject: ${email.subject}</div>
-      <textarea id="email-body-${inq.id}" style="width:100%;min-height:200px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;line-height:1.8;color:var(--cream);font-family:'Outfit',sans-serif;resize:vertical;box-sizing:border-box;margin-top:6px">${email.body}</textarea>
+      <div class="email-subj" id="email-subj-${inq.id}">Subject: </div>
+      <textarea id="email-body-${inq.id}" style="width:100%;min-height:200px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;line-height:1.8;color:var(--cream);font-family:'Outfit',sans-serif;resize:vertical;box-sizing:border-box;margin-top:6px" placeholder="Click a template above or type your response here..."></textarea>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="btn btn-outline" style="font-size:11px" onclick="copyEmail('${inq.id}')">📋 Copy</button>
         <button class="btn btn-gold" style="font-size:11px" onclick="sendEmailGmail('${inq.id}')">✉ Send via Gmail</button>
@@ -4438,9 +4461,141 @@ function showPage(name) {
   if (name==='financials') renderFinancials();
   if (name==='calendar') renderCalendar();
   if (name==='settings') renderSettings();
+  if (name==='gmail') loadGmail();
 }
 
-// ════════════════════════════════ TOAST ════════════════════════════════
+// ════════════════════════════════ GMAIL ════════════════════════════════
+const GMAIL_STATE = { threads: [], selected: null };
+
+async function loadGmail() {
+  const listEl = document.getElementById('gmail-list');
+  listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:13px">Loading...</div>';
+  try {
+    const threads = await apiCall('getGmailThreads', { maxResults: 20 });
+    GMAIL_STATE.threads = threads || [];
+    renderGmailList();
+  } catch(e) {
+    listEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><div class="empty-msg">${e.message}</div></div>`;
+  }
+}
+
+function renderGmailList() {
+  const listEl = document.getElementById('gmail-list');
+  if (!GMAIL_STATE.threads.length) {
+    listEl.innerHTML = '<div class="empty"><div class="empty-icon">✉</div><div class="empty-msg">No emails found</div></div>';
+    return;
+  }
+  listEl.innerHTML = GMAIL_STATE.threads.map((t,i) => {
+    const isSelected = GMAIL_STATE.selected?.id === t.id;
+    const isUnread = t.unread;
+    return `<div onclick="openGmailThread(${i})" style="
+      padding:12px 14px;border-radius:10px;cursor:pointer;
+      background:${isSelected?'rgba(139,26,26,0.25)':'rgba(255,255,255,0.04)'};
+      border:1px solid ${isSelected?'var(--gold)':'var(--border)'};
+      transition:all 0.15s
+    ">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+        <div style="font-size:12px;font-weight:${isUnread?'600':'400'};color:${isUnread?'var(--cream)':'var(--muted2)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">${escHtml(t.from)}</div>
+        <div style="font-size:10px;color:var(--muted);white-space:nowrap">${t.date}</div>
+      </div>
+      <div style="font-size:12px;color:var(--cream);margin-top:2px;font-weight:${isUnread?'600':'400'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(t.subject)}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(t.snippet)}</div>
+    </div>`;
+  }).join('');
+}
+
+async function openGmailThread(idx) {
+  GMAIL_STATE.selected = GMAIL_STATE.threads[idx];
+  renderGmailList();
+  const detailEl = document.getElementById('gmail-detail');
+  detailEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Loading...</div>';
+  try {
+    const thread = await apiCall('getGmailThread', { threadId: GMAIL_STATE.selected.id });
+    renderGmailDetail(thread);
+  } catch(e) {
+    detailEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><div class="empty-msg">${e.message}</div></div>`;
+  }
+}
+
+function renderGmailDetail(thread) {
+  const detailEl = document.getElementById('gmail-detail');
+  const messages = thread.messages || [];
+  const last = messages[messages.length - 1];
+  const replyTo = last?.from || thread.from || '';
+  const subject = thread.subject || '';
+  const replySubject = subject.startsWith('Re:') ? subject : 'Re: ' + subject;
+
+  const msgHtml = messages.map(m => `
+    <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:4px">
+        <div style="font-size:12px;color:var(--gold)">${escHtml(m.from)}</div>
+        <div style="font-size:11px;color:var(--muted)">${m.date}</div>
+      </div>
+      <div style="font-size:13px;color:var(--cream);line-height:1.7;white-space:pre-wrap">${escHtml(m.body)}</div>
+    </div>
+  `).join('');
+
+  detailEl.innerHTML = `
+    <div>
+      <div class="card-title" style="font-size:16px;margin-bottom:4px">${escHtml(subject)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:16px">${messages.length} message${messages.length!==1?'s':''}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">${msgHtml}</div>
+    <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:4px">
+      <div class="sec-label" style="margin-bottom:10px">Reply</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">To: ${escHtml(replyTo)}</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <button class="btn btn-outline" style="font-size:11px" onclick="gmailAiDraft(${JSON.stringify(JSON.stringify({subject, messages}))})">✦ AI Draft</button>
+      </div>
+      <textarea id="gmail-reply-body" style="width:100%;min-height:180px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.8;color:var(--cream);font-family:'Outfit',sans-serif;resize:vertical;box-sizing:border-box" placeholder="Type your reply..."></textarea>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-gold" style="font-size:11px" onclick="gmailSendReply(${JSON.stringify(JSON.stringify({to: replyTo, subject: replySubject, threadId: thread.id}))})">✉ Send Reply</button>
+        <div id="gmail-reply-status" style="font-size:11px;color:var(--muted)"></div>
+      </div>
+    </div>
+  `;
+}
+
+async function gmailAiDraft(threadJsonStr) {
+  const threadData = JSON.parse(threadJsonStr);
+  const statusEl = document.getElementById('gmail-reply-status');
+  const bodyEl = document.getElementById('gmail-reply-body');
+  if (statusEl) statusEl.textContent = '✦ Drafting...';
+  try {
+    const result = await apiCall('aiGmailDraft', { threadData });
+    if (result?.draft) {
+      bodyEl.value = result.draft;
+      if (statusEl) statusEl.textContent = '✦ Draft ready — edit before sending';
+    }
+  } catch(e) {
+    if (statusEl) statusEl.textContent = '⚠ AI draft failed: ' + e.message;
+  }
+}
+
+async function gmailSendReply(paramsJsonStr) {
+  const { to, subject, threadId } = JSON.parse(paramsJsonStr);
+  const bodyEl = document.getElementById('gmail-reply-body');
+  const statusEl = document.getElementById('gmail-reply-status');
+  const body = bodyEl?.value?.trim();
+  if (!body) { toast('⚠ Reply is empty'); return; }
+  if (!confirm(`Send reply to ${to}?`)) return;
+  if (statusEl) statusEl.textContent = '📤 Sending...';
+  try {
+    const result = await apiCall('sendEmail', { to, subject, body, threadId });
+    if (result?.sent) {
+      if (statusEl) statusEl.textContent = `✓ Sent to ${to}`;
+      bodyEl.value = '';
+      toast('✓ Reply sent!');
+    }
+  } catch(e) {
+    if (statusEl) statusEl.textContent = '⚠ Send failed: ' + e.message;
+  }
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
