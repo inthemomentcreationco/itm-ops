@@ -834,7 +834,12 @@ function saveCfg() {
 }
 function loadCfg() {
   const c = localStorage.getItem('itm_cfg');
-  if (c) CFG = { ...CFG, ...JSON.parse(c) };
+  if (c) {
+    const saved = JSON.parse(c);
+    // Never overwrite hardcoded scriptUrl with an empty value
+    if (!saved.scriptUrl) delete saved.scriptUrl;
+    CFG = { ...CFG, ...saved };
+  }
 }
 
 // save() is called throughout the app — now syncs to Apps Script
