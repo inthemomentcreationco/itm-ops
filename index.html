@@ -1155,16 +1155,15 @@ function loadDemoData() {
 
 // ════════════════════════════════ SCORING ENGINE ════════════════════════════════
 const PACKAGE_PRICE = {
-  wedding: { "just a little": 2000, "happy medium": 2800, "full on paparazzi": 3600 },
-  event:   { "just a little": 1200, "happy medium": 1800, "full on paparazzi": 2400 },
+  wedding: { "just a little": 2400, "happy medium": 2600, "full on paparazzi": 3000 },
+  event:   { "just a little": 2400, "happy medium": 2600, "full on paparazzi": 3000 },
 };
 
 function getMyPrice(inq) {
-  const isWedding = /wedding|multi/i.test(inq.eventType);
   const pkg = (inq.package || '').toLowerCase();
-  const table = isWedding ? PACKAGE_PRICE.wedding : PACKAGE_PRICE.event;
+  const table = PACKAGE_PRICE.wedding; // same pricing for all event types now
   for (const [k, v] of Object.entries(table)) { if (pkg.includes(k)) return v; }
-  return isWedding ? 2000 : 1200;
+  return 2400; // default to entry package
 }
 
 function parseBudget(str) {
@@ -1354,26 +1353,36 @@ function score(inq) {
   const loc = (inq.location||'').toLowerCase();
   const isLuxVenue = /hotel|hyatt|marriott|ritz|four seasons|hay-adams|mandarin|lotte|omni|hilton|sheraton|westin|waldorf|museum|gallery|estate|manor|vineyard|winery|rooftop|ballroom|club/i.test(loc);
   const isBackyard = /backyard|back yard|house party|apartment|home|private residence/i.test(loc) && !/estate|manor/i.test(loc);
+  const hasInstagram = !!(inq.instagram && inq.instagram.trim().length > 1);
+  const pkg = (inq.package||'').toLowerCase();
+  const hasSpecificPackage = /just a little|happy medium|full.?on paparazzi/i.test(pkg);
+
+  // Day of week (Saturday = peak)
+  let isSaturday = false;
+  if (inq.eventDate) {
+    const d = new Date(inq.eventDate);
+    isSaturday = d.getDay() === 6;
+  }
 
   const criteria = [];
   let total = 0;
 
-  // 1. Budget (25pts)
+  // 1. Budget (20pts)
   let bPts=0, bColor='r', bDetail='';
-  if(budget===0){bPts=10;bColor='a';bDetail='Budget not specified — ask before sending pricing';}
-  else if(budget>=myPrice){bPts=25;bColor='g';bDetail=`$${budget.toLocaleString()} meets package price of $${myPrice.toLocaleString()}`;}
-  else if(budget>=myPrice*.8){bPts=16;bColor='a';bDetail=`$${budget.toLocaleString()} is slightly under $${myPrice.toLocaleString()} — could negotiate`;}
-  else if(budget>=myPrice*.6){bPts=8;bColor='r';bDetail=`$${budget.toLocaleString()} is well under $${myPrice.toLocaleString()}`;}
-  else{bPts=0;bColor='r';bDetail=`$${budget.toLocaleString()} is far below your minimum of $${myPrice.toLocaleString()}`;}
-  criteria.push({label:'Budget vs. Package',pts:bPts,max:25,color:bColor,detail:bDetail});
+  if(budget===0){bPts=8;bColor='a';bDetail='Budget not specified — ask before sending pricing';}
+  else if(budget>=myPrice){bPts=20;bColor='g';bDetail=`$${budget.toLocaleString()} meets package price of $${myPrice.toLocaleString()}`;}
+  else if(budget>=myPrice*.85){bPts=14;bColor='a';bDetail=`$${budget.toLocaleString()} is slightly under $${myPrice.toLocaleString()} — could negotiate`;}
+  else if(budget>=myPrice*.65){bPts=7;bColor='r';bDetail=`$${budget.toLocaleString()} is well under $${myPrice.toLocaleString()}`;}
+  else{bPts=0;bColor='r';bDetail=`$${budget.toLocaleString()} is far below minimum of $${myPrice.toLocaleString()}`;}
+  criteria.push({label:'Budget vs. Package',pts:bPts,max:20,color:bColor,detail:bDetail});
   total+=bPts;
 
-  // 2. Planner (25pts weddings, 10 others)
-  const pMax = isWedding ? 25 : 10;
+  // 2. Planner (20pts weddings, 8 others)
+  const pMax = isWedding ? 20 : 8;
   let pPts=0, pColor='r', pDetail='';
   if(hasPlanner){pPts=pMax;pColor='g';pDetail='Has a dedicated planner — ✓';}
   else if(noPlanner&&isWedding){pPts=0;pColor='r';pDetail='⛔ No planner — hard rule: you do not book weddings without one';}
-  else if(noPlanner){pPts=Math.round(pMax*.7);pColor='a';pDetail='No planner — acceptable for this event type';}
+  else if(noPlanner){pPts=Math.round(pMax*.75);pColor='a';pDetail='No planner — acceptable for this event type';}
   else{pPts=Math.round(pMax*.5);pColor='a';pDetail='Unclear if they have a planner — needs follow-up';}
   criteria.push({label:'Wedding Planner',pts:pPts,max:pMax,color:pColor,detail:pDetail});
   total+=pPts;
@@ -1384,12 +1393,15 @@ function score(inq) {
   criteria.push({label:'Location / Travel',pts:tPts,max:20,color:tColor,detail:`~${miles}mi from DC (${travel.category})`+(travel.feeMin>0?` — suggest $${travel.feeMin}–$${travel.feeMax} travel fee`:'')});
   total+=tPts;
 
-  // 4. Date & Team Availability (10pts) — uses real calendar + availability sheet data
-  let dPts=10, dColor='g', dDetail='';
+  // 4. Date, Lead Time & Team Availability (15pts)
+  let dPts=0, dColor='a', dDetail='';
   if(months===null){dPts=5;dColor='a';dDetail='No date provided';}
   else if(months<0){dPts=0;dColor='r';dDetail='Date has already passed';}
-  else if(months>12){dPts=4;dColor='a';dDetail=`${Math.round(months)} months out — outside 12-month booking window`;}
-  else{dPts=10;dColor='g';dDetail=`${Math.round(months)} months out — within booking window`;}
+  else if(months<1){dPts=2;dColor='r';dDetail=`${Math.round(months*4)} weeks out — very last minute`;}
+  else if(months<2){dPts=6;dColor='a';dDetail=`${Math.round(months)} month out — tight lead time`;}
+  else if(months<=12){dPts=15;dColor='g';dDetail=`${Math.round(months)} months out — ideal booking window`;}
+  else if(months<=18){dPts=10;dColor='a';dDetail=`${Math.round(months)} months out — early but workable`;}
+  else{dPts=4;dColor='r';dDetail=`${Math.round(months)} months out — very far out, may go cold`;}
 
   if(avail){
     if(avail.laurenBooked){
@@ -1409,25 +1421,35 @@ function score(inq) {
       dDetail+=' · (Connect calendar + availability sheet to see real team data)';
     }
   }
-  criteria.push({label:'Date / Team Availability',pts:dPts,max:10,color:dColor,detail:dDetail});
+  criteria.push({label:'Date / Lead Time / Availability',pts:dPts,max:15,color:dColor,detail:dDetail});
   total+=dPts;
 
-  // 5. Venue (10pts)
+  // 5. Venue & Content Potential (10pts)
   let vPts=7, vColor='a', vDetail='Standard venue — neutral';
   if(isLuxVenue){vPts=10;vColor='g';vDetail='Luxury/distinctive venue — strong content potential';}
   if(isBackyard){vPts=3;vColor='r';vDetail='Casual/backyard — limited content value';}
   criteria.push({label:'Venue / Content Potential',pts:vPts,max:10,color:vColor,detail:vDetail});
   total+=vPts;
 
-  // 6. Source (5pts)
-  let sPts=3, sColor='a';
-  if(isReferral){sPts=5;sColor='g';}else if(/email|direct/i.test(inq.source||'')){sPts=4;sColor='g';}
-  criteria.push({label:'Inquiry Source',pts:sPts,max:5,color:sColor,detail:isReferral?'Referral — pre-sold':'Standard organic inquiry'});
+  // 6. Instagram provided (5pts)
+  let iPts=hasInstagram?5:0, iColor=hasInstagram?'g':'a';
+  criteria.push({label:'Instagram Handle',pts:iPts,max:5,color:iColor,detail:hasInstagram?`@${inq.instagram} — can check their aesthetic`:'No Instagram provided — can\'t vet their vibe'});
+  total+=iPts;
+
+  // 7. Package intent (5pts)
+  let pkgPts=hasSpecificPackage?5:2, pkgColor=hasSpecificPackage?'g':'a';
+  criteria.push({label:'Package Clarity',pts:pkgPts,max:5,color:pkgColor,detail:hasSpecificPackage?`Selected ${inq.package} — knows what they want`:'No specific package selected — still exploring'});
+  total+=pkgPts;
+
+  // 8. Source (3pts)
+  let sPts=2, sColor='a';
+  if(isReferral){sPts=3;sColor='g';}else if(/email|direct/i.test(inq.source||'')){sPts=3;sColor='g';}
+  criteria.push({label:'Inquiry Source',pts:sPts,max:3,color:sColor,detail:isReferral?'Referral — pre-sold':'Standard organic inquiry'});
   total+=sPts;
 
-  // 7. Photo (5pts)
-  let phPts=hasPhoto?5:3, phColor=hasPhoto?'g':'a';
-  criteria.push({label:'Photographer',pts:phPts,max:5,color:phColor,detail:hasPhoto?'Has photographer — event is invested':'No photographer confirmed yet'});
+  // 9. Photographer (2pts)
+  let phPts=hasPhoto?2:1, phColor=hasPhoto?'g':'a';
+  criteria.push({label:'Photographer',pts:phPts,max:2,color:phColor,detail:hasPhoto?'Has photographer — event is invested':'No photographer confirmed yet'});
   total+=phPts;
 
   // Hard fails
@@ -1436,7 +1458,6 @@ function score(inq) {
   if(budget>0&&budget<myPrice*.5) hardFails.push(`Budget ($${budget.toLocaleString()}) is less than half your minimum`);
   if(months!==null&&months<0)    hardFails.push('Event date has passed');
   if(avail?.laurenBooked)        hardFails.push('You are already booked on this date (Google Calendar)');
-  if(months!==null&&months>12)   hardFails.push('More than 12 months out — outside booking window');
 
   inq._scored    = true;
   inq._score     = Math.min(100, total);
