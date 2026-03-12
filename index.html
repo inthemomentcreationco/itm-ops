@@ -2048,46 +2048,27 @@ async function aiDraftEmail(id) {
   if (statusEl) statusEl.textContent = '✨ Generating AI draft...';
   if (bodyEl) bodyEl.style.opacity = '0.5';
 
-  const nd = normalizeDate(inq.eventDate);
-  const evtDateStr = nd ? new Date(nd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'long',day:'numeric',year:'numeric'}) : 'TBD';
   const hasFail = inq._hardFails?.length > 0;
   const s = inq._score || 0;
   const type = hasFail ? 'decline' : s >= 50 ? 'pursue' : 'clarify';
 
-  const prompt = `You are Lauren Nava, owner of In The Moment LLC, a wedding and event social media content creation business based in Washington DC. Write a warm, professional, personalized email response to this inquiry.
-
-INQUIRY DETAILS:
-- Name: ${inq.name}
-- Event date: ${evtDateStr}
-- Event type: ${inq.eventType||'event'}
-- Package interested in: ${inq.package||'not specified'}
-- Location/venue: ${inq.location||'not specified'}
-- Their budget: ${inq.budget||'not specified'}
-- Instagram: ${inq.instagram||'not provided'}
-- Has wedding planner: ${inq.planner||'unknown'}
-- Their vision/notes: ${inq.vision||'none provided'}
-
-YOUR PACKAGES:
-- Just a Little Sumthin': $2,400 / 8 hours / 2 edited videos
-- Happy Medium: $2,600 / 10 hours / 3 edited videos  
-- Full-On Paparazzi: $3,000 / 12 hours / 4 edited videos
-
-RESPONSE TYPE: ${type === 'decline' ? 'Politely decline — hard stop issue: '+inq._hardFails?.join(', ') : type === 'pursue' ? 'Enthusiastic response — strong lead, express excitement, mention packages/pricing, ask to set up a call' : 'Ask clarifying questions before committing — mention you need more info'}
-
-Write ONLY the email body. No subject line. Start with "Hi [first name]!" Keep it warm, personal, concise (3-4 short paragraphs). Sign off as "Lauren / In The Moment LLC". Do not use placeholders like [X] — use the actual info provided.`;
-
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content: prompt }]
-      })
+    const nd = normalizeDate(inq.eventDate);
+    const evtDateStr2 = nd ? new Date(nd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'long',day:'numeric',year:'numeric'}) : 'TBD';
+    const result = await apiCall('aiDraftEmail', {
+      name:      inq.name,
+      eventDate: evtDateStr2,
+      eventType: inq.eventType,
+      package:   inq.package,
+      location:  inq.location,
+      budget:    inq.budget,
+      instagram: inq.instagram,
+      planner:   inq.planner,
+      vision:    inq.vision,
+      type:      type,
+      declineReason: inq._hardFails?.join(', ') || ''
     });
-    const data = await res.json();
-    const draft = data.content?.[0]?.text || '';
+    const draft = result?.draft || '';
     if (bodyEl && draft) {
       bodyEl.value = draft;
       bodyEl.style.opacity = '1';
@@ -2095,7 +2076,7 @@ Write ONLY the email body. No subject line. Start with "Hi [first name]!" Keep i
     if (statusEl) statusEl.textContent = '✓ AI draft ready — review and edit before sending';
   } catch(e) {
     if (bodyEl) bodyEl.style.opacity = '1';
-    if (statusEl) statusEl.textContent = '⚠ AI draft failed — edit the template above manually';
+    if (statusEl) statusEl.textContent = '⚠ AI draft failed: ' + e.message;
   }
 }
 
