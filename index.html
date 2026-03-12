@@ -926,7 +926,7 @@ async function syncData() {
             vision:     get('vision','aesthetic','describe','dream','notes','message'),
             source:     get('hear about','referral','referred','source','how did'),
             stage:      get('stage') || 'new',
-            rowIndex:   i + 1,
+            _rowIndex:  i + 1,
           };
         });
         // Sort newest inquiry first
@@ -2001,13 +2001,19 @@ function openDetail(id) {
     </div>
 
     <div class="sec-label" style="margin-bottom:8px">Response Email Draft</div>
-    <div class="email-subj">Subject: ${email.subject}</div>
-    <div class="email-draft">${email.body}</div>
-    <button class="copy-btn" onclick="copyEmail('${inq.id}')">Copy Email</button>
+    <div id="email-draft-area-${inq.id}">
+      <div class="email-subj" id="email-subj-${inq.id}">Subject: ${email.subject}</div>
+      <textarea id="email-body-${inq.id}" style="width:100%;min-height:200px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;line-height:1.8;color:var(--cream);font-family:'Outfit',sans-serif;resize:vertical;box-sizing:border-box;margin-top:6px">${email.body}</textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn btn-outline" style="font-size:11px" onclick="aiDraftEmail('${inq.id}')">✨ AI Draft</button>
+        <button class="btn btn-outline" style="font-size:11px" onclick="copyEmail('${inq.id}')">📋 Copy</button>
+        <button class="btn btn-gold" style="font-size:11px" onclick="sendEmailGmail('${inq.id}')">✉ Send via Gmail</button>
+      </div>
+      <div id="email-send-status-${inq.id}" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>
+    </div>
 
     <div class="action-row" style="margin-top:16px">
       ${!hasFail&&s>=50?`<button class="btn btn-gold" onclick="bookInquiry('${inq.id}')">✓ Book This Client</button>`:''}
-      <button class="btn btn-outline" onclick="copyEmail('${inq.id}')">Copy Email</button>
       <button class="btn btn-red" onclick="setStage('${inq.id}','declined')">Decline</button>
     </div>
   `;
@@ -2027,8 +2033,126 @@ function setStage(id, stage) {
 function copyEmail(id) {
   const inq = DATA.inquiries.find(i=>i.id===id);
   if (!inq) return;
-  const { subject, body } = generateEmail(inq);
-  navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`).then(()=>toast('Email copied to clipboard!'));
+  const bodyEl = document.getElementById('email-body-'+id);
+  const subjEl = document.getElementById('email-subj-'+id);
+  const body = bodyEl ? bodyEl.value : generateEmail(inq).body;
+  const subj = subjEl ? subjEl.textContent.replace('Subject: ','') : generateEmail(inq).subject;
+  navigator.clipboard.writeText(`Subject: ${subj}\n\n${body}`).then(()=>toast('Email copied to clipboard!'));
+}
+
+async function aiDraftEmail(id) {
+  const inq = DATA.inquiries.find(i=>i.id===id);
+  if (!inq) return;
+  const statusEl = document.getElementById('email-send-status-'+id);
+  const bodyEl = document.getElementById('email-body-'+id);
+  if (statusEl) statusEl.textContent = '✨ Generating AI draft...';
+  if (bodyEl) bodyEl.style.opacity = '0.5';
+
+  const nd = normalizeDate(inq.eventDate);
+  const evtDateStr = nd ? new Date(nd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'long',day:'numeric',year:'numeric'}) : 'TBD';
+  const hasFail = inq._hardFails?.length > 0;
+  const s = inq._score || 0;
+  const type = hasFail ? 'decline' : s >= 50 ? 'pursue' : 'clarify';
+
+  const prompt = `You are Lauren Nava, owner of In The Moment LLC, a wedding and event social media content creation business based in Washington DC. Write a warm, professional, personalized email response to this inquiry.
+
+INQUIRY DETAILS:
+- Name: ${inq.name}
+- Event date: ${evtDateStr}
+- Event type: ${inq.eventType||'event'}
+- Package interested in: ${inq.package||'not specified'}
+- Location/venue: ${inq.location||'not specified'}
+- Their budget: ${inq.budget||'not specified'}
+- Instagram: ${inq.instagram||'not provided'}
+- Has wedding planner: ${inq.planner||'unknown'}
+- Their vision/notes: ${inq.vision||'none provided'}
+
+YOUR PACKAGES:
+- Just a Little Sumthin': $2,400 / 8 hours / 2 edited videos
+- Happy Medium: $2,600 / 10 hours / 3 edited videos  
+- Full-On Paparazzi: $3,000 / 12 hours / 4 edited videos
+
+RESPONSE TYPE: ${type === 'decline' ? 'Politely decline — hard stop issue: '+inq._hardFails?.join(', ') : type === 'pursue' ? 'Enthusiastic response — strong lead, express excitement, mention packages/pricing, ask to set up a call' : 'Ask clarifying questions before committing — mention you need more info'}
+
+Write ONLY the email body. No subject line. Start with "Hi [first name]!" Keep it warm, personal, concise (3-4 short paragraphs). Sign off as "Lauren / In The Moment LLC". Do not use placeholders like [X] — use the actual info provided.`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    const data = await res.json();
+    const draft = data.content?.[0]?.text || '';
+    if (bodyEl && draft) {
+      bodyEl.value = draft;
+      bodyEl.style.opacity = '1';
+    }
+    if (statusEl) statusEl.textContent = '✓ AI draft ready — review and edit before sending';
+  } catch(e) {
+    if (bodyEl) bodyEl.style.opacity = '1';
+    if (statusEl) statusEl.textContent = '⚠ AI draft failed — edit the template above manually';
+  }
+}
+
+async function sendEmailGmail(id) {
+  const inq = DATA.inquiries.find(i=>i.id===id);
+  if (!inq) return;
+  if (!inq.email) { toast('⚠ No email address for this inquiry'); return; }
+
+  const bodyEl = document.getElementById('email-body-'+id);
+  const subjEl = document.getElementById('email-subj-'+id);
+  const statusEl = document.getElementById('email-send-status-'+id);
+  const body = bodyEl ? bodyEl.value.trim() : '';
+  const subject = subjEl ? subjEl.textContent.replace('Subject: ','').trim() : 'Following up on your inquiry';
+
+  if (!body) { toast('⚠ Email body is empty'); return; }
+
+  const confirmed = confirm(`Send this email to ${inq.name} at ${inq.email}?\n\nSubject: ${subject}\n\nThis will send from your Gmail account.`);
+  if (!confirmed) return;
+
+  if (statusEl) statusEl.textContent = '📤 Sending...';
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        mcp_servers: [{ type: 'url', url: 'https://gmail.mcp.claude.com/mcp', name: 'gmail' }],
+        messages: [{ role: 'user', content: `Send an email using Gmail with these exact details:
+To: ${inq.email}
+Subject: ${subject}
+Body:
+${body}
+
+Send it now and confirm it was sent.` }]
+      })
+    });
+    const data = await res.json();
+    const reply = data.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
+    const sent = /sent|delivered|success/i.test(reply);
+
+    if (sent) {
+      if (statusEl) statusEl.textContent = `✓ Sent to ${inq.email}`;
+      // Mark as contacted in dashboard + sheet
+      inq.stage = 'contacted';
+      saveCfg();
+      renderInquiries();
+      // Write back to sheet
+      apiCall('updateInquiryStage', { rowIndex: inq._rowIndex, emailSent: true }).catch(()=>{});
+      toast(`✓ Email sent to ${inq.name}!`);
+    } else {
+      if (statusEl) statusEl.textContent = '⚠ Could not confirm send — check your Gmail sent folder';
+    }
+  } catch(e) {
+    if (statusEl) statusEl.textContent = '⚠ Send failed: ' + e.message;
+  }
 }
 
 function getPackageHours(pkg, eventType) {
