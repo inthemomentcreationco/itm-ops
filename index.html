@@ -2118,27 +2118,13 @@ async function sendEmailGmail(id) {
   if (statusEl) statusEl.textContent = '📤 Sending...';
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        mcp_servers: [{ type: 'url', url: 'https://gmail.mcp.claude.com/mcp', name: 'gmail' }],
-        messages: [{ role: 'user', content: `Send an email using Gmail with these exact details:
-To: ${inq.email}
-Subject: ${subject}
-Body:
-${body}
-
-Send it now and confirm it was sent.` }]
-      })
+    const result = await apiCall('sendEmail', {
+      to: inq.email,
+      subject: subject,
+      body: body
     });
-    const data = await res.json();
-    const reply = data.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
-    const sent = /sent|delivered|success/i.test(reply);
 
-    if (sent) {
+    if (result && result.sent) {
       if (statusEl) statusEl.textContent = `✓ Sent to ${inq.email}`;
       // Mark as contacted in dashboard + sheet
       inq.stage = 'contacted';
@@ -2148,7 +2134,7 @@ Send it now and confirm it was sent.` }]
       apiCall('updateInquiryStage', { rowIndex: inq._rowIndex, emailSent: true }).catch(()=>{});
       toast(`✓ Email sent to ${inq.name}!`);
     } else {
-      if (statusEl) statusEl.textContent = '⚠ Could not confirm send — check your Gmail sent folder';
+      if (statusEl) statusEl.textContent = '⚠ Unexpected response — check your Gmail sent folder';
     }
   } catch(e) {
     if (statusEl) statusEl.textContent = '⚠ Send failed: ' + e.message;
