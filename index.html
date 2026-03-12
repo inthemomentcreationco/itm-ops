@@ -863,14 +863,10 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 async function init() {
-  // Safety net: if still showing "Connecting" after 20s, show error with retry button
-  const connectTimeout = setTimeout(() => {
-    const dash = document.getElementById('dash-content');
-    if (dash && dash.querySelector('.loading')) {
-      dash.innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><div class="empty-msg">Connection timed out.<br><br><button class="btn btn-gold" onclick="init()">↻ Retry</button></div></div>`;
-    }
-  }, 20000);
-
+  // Always set secret and URL directly — never rely on localStorage alone
+  _secret = 'phone-remote-cup-pen';
+  CFG.scriptUrl = 'https://script.google.com/macros/s/AKfycbztxKA-9UXBUQuifMsTfRuU7k9qrp_w3msGpUwrU6iEVvYRBvVL0M_hXuR7WPQ0fva2/exec';
+  localStorage.setItem('itm_secret', _secret);
   loadExtendedData();
   if (!CFG.scriptUrl) {
     document.getElementById('setupBanner').style.display = 'block';
@@ -1098,7 +1094,6 @@ async function syncData() {
   saveCfg();
 
   if (inquiriesLoaded) {
-    clearTimeout(connectTimeout);
     btn.className = 'sync-btn connected';
     btn.textContent = `✓ Synced (${DATA.inquiries.length} inquiries)`;
     setTimeout(() => { btn.className = 'sync-btn'; btn.textContent = '↻ Sync'; btn.disabled = false; }, 3000);
