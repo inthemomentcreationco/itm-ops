@@ -4567,11 +4567,36 @@ async function gmailAiDraft() {
   const bodyEl = document.getElementById('gmail-reply-body');
   if (statusEl) statusEl.textContent = '✦ Drafting...';
   try {
-    const result = await apiCall('aiGmailDraft', { threadData: { subject: thread.subject, messages: thread.messages } });
-    if (result?.draft) {
-      bodyEl.value = result.draft;
-      if (statusEl) statusEl.textContent = '✦ Draft ready — edit before sending';
-    }
+    const messages = thread.messages || [];
+    const history = messages.map(m => `From: ${m.from}\n${m.body}`).join('\n\n---\n\n');
+    const prompt = `You are Lauren Nava, owner of In The Moment LLC, a wedding and event social media content creation business in Washington DC. Draft a warm, professional reply to this email thread.
+
+Subject: ${thread.subject || ''}
+
+Email thread:
+${history}
+
+Write ONLY the reply body. Be warm, concise, and professional. Sign off as:
+
+Xoxo Lauren
+In The Moment LLC
+inthemomentcreationco@gmail.com`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 800,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    const draft = data.content?.[0]?.text;
+    if (!draft) throw new Error('Empty response');
+    bodyEl.value = draft;
+    if (statusEl) statusEl.textContent = '✦ Draft ready — edit before sending';
   } catch(e) {
     if (statusEl) statusEl.textContent = '⚠ AI draft failed: ' + e.message;
   }
