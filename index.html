@@ -4548,9 +4548,6 @@ function renderGmailDetail(thread) {
     <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:4px">
       <div class="sec-label" style="margin-bottom:10px">Reply</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">To: ${escHtml(replyTo)}</div>
-      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-        <button class="btn btn-outline" style="font-size:11px" onclick="gmailAiDraft()">✦ AI Draft</button>
-      </div>
       <textarea id="gmail-reply-body" style="width:100%;min-height:180px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.8;color:var(--cream);font-family:'Outfit',sans-serif;resize:vertical;box-sizing:border-box" placeholder="Type your reply..."></textarea>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-gold" style="font-size:11px" onclick="gmailSendReply()">✉ Send Reply</button>
