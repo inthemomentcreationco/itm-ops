@@ -757,10 +757,10 @@ let currentInquiry = null;
 
 // ════════════════════════════════ SECRET PROMPT ════════════════════════════════
 function getSecret() {
-  // Check localStorage first (set on previous visit)
   const stored = localStorage.getItem('itm_secret');
   if (stored) return stored;
-  return null;
+  // Fallback: use hardcoded secret so the dashboard never gets stuck
+  return 'phone-remote-cup-pen';
 }
 
 function promptSecret() {
