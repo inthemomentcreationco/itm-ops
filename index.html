@@ -2551,7 +2551,10 @@ function renderFinInvoices(unpaidRows, allRows, thisYear) {
             <td style="color:${isOverdue&&daysAgo>30?'var(--red)':isOverdue?'var(--amber)':'var(--muted2)'}">
               ${daysAgo===null?'—':daysAgo===0?'Today':daysAgo>0?daysAgo+' days ago':Math.abs(daysAgo)+' days away'}
             </td>
-            <td>${r._live ? `<button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="markInvoicePaid('${r.id}')">Mark Paid</button>` : '<span style="font-size:10px;color:var(--muted)">HB record</span>'}</td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              ${r._live ? `<button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="markInvoicePaid('${r.id}')">Mark Paid</button>` : ''}
+              <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
+            </td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -2679,7 +2682,7 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
   </div>
   <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>Client</th><th>Date</th><th>Type</th><th>Contract</th><th>Deposit</th><th>Balance Due</th><th>Status</th></tr></thead>
+      <thead><tr><th>Client</th><th>Date</th><th>Type</th><th>Contract</th><th>Deposit</th><th>Balance Due</th><th>Status</th><th></th></tr></thead>
       <tbody>
         ${sortedYear.length ? sortedYear.map(r => {
           const d = r.date||r.eventDate||'';
@@ -2695,11 +2698,180 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
             <td style="color:${hasDeposit?'var(--green)':'var(--muted)'}">$${(r.deposit||0).toLocaleString()}</td>
             <td style="color:${isPaid?'var(--green)':'var(--amber)'}">$${Math.round(r.balanceDue||0).toLocaleString()}</td>
             <td style="color:${statusColor};font-weight:600;font-size:11px">${status}</td>
+            <td><button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button></td>
           </tr>`;
-        }).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">No ${thisYear} events — sync to pull from sheet</td></tr>`}
+        }).join('') : `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">No ${thisYear} events — sync to pull from sheet</td></tr>`}
       </tbody>
     </table>
   </div>`;
+}
+
+function openFinEdit(id) {
+  const allRows = [...(DATA.historicalEvents||[]), ...(DATA.events||[]).map(e => {
+    const fin = (DATA.historicalEvents||[]).find(h=>h.id===e.id)||{};
+    return { id:e.id, date:e.eventDate||'', client:e.client, eventType:e.eventType||'',
+      grossAmount:(e.contractValue||0)+(e.travelFee||0), deposit:e.deposit||0,
+      balanceDue:e.balance||0, paid:(e.balance||0)===0&&(e.deposit||0)>0,
+      contractorName:fin.contractorName||'', contractorHours:fin.contractorHours||'',
+      contractorPay:fin.contractorPay||'', contractorName2:fin.contractorName2||'',
+      contractorHours2:fin.contractorHours2||'', contractorPay2:fin.contractorPay2||'',
+      travelFee:e.travelFee||0, hbFees:fin.hbFees||0, package:e.package||fin.package||'',
+      source:'live', _live:e };
+  })];
+  const r = allRows.find(x => x.id === id);
+  if (!r) { toast('Record not found'); return; }
+
+  const existing = document.getElementById('fin-edit-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'fin-edit-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = `
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:28px;width:100%;max-width:540px;max-height:90vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div style="font-family:'Cormorant',serif;font-size:22px;color:var(--cream)">${r.client}</div>
+        <button onclick="document.getElementById('fin-edit-modal').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted2);margin-bottom:20px">${r.date ? new Date(r.date+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}) : '—'} · ${r.eventType||'—'}</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+        <div class="field">
+          <label class="field-lbl">Deposit Received ($)</label>
+          <input class="field-input" id="fe-deposit" type="number" value="${r.deposit||0}" min="0">
+        </div>
+        <div class="field">
+          <label class="field-lbl">Balance Due ($)</label>
+          <input class="field-input" id="fe-balance" type="number" value="${r.balanceDue||0}" min="0">
+        </div>
+        <div class="field">
+          <label class="field-lbl">Fully Paid?</label>
+          <select class="field-input" id="fe-paid">
+            <option value="0" ${!r.paid?'selected':''}>No — balance outstanding</option>
+            <option value="1" ${r.paid?'selected':''}>Yes — fully paid</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-lbl">Contract Value ($)</label>
+          <input class="field-input" id="fe-gross" type="number" value="${r.grossAmount||0}" min="0">
+        </div>
+      </div>
+
+      <div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px">Contractor Info</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:8px">
+        <div class="field">
+          <label class="field-lbl">Contractor 1</label>
+          <input class="field-input" id="fe-c1name" type="text" value="${r.contractorName||''}">
+        </div>
+        <div class="field">
+          <label class="field-lbl">Hours</label>
+          <input class="field-input" id="fe-c1hours" type="number" value="${r.contractorHours||''}" min="0">
+        </div>
+        <div class="field">
+          <label class="field-lbl">Pay ($)</label>
+          <input class="field-input" id="fe-c1pay" type="number" value="${r.contractorPay||''}" min="0">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:24px">
+        <div class="field">
+          <label class="field-lbl">Contractor 2</label>
+          <input class="field-input" id="fe-c2name" type="text" value="${r.contractorName2||''}">
+        </div>
+        <div class="field">
+          <label class="field-lbl">Hours</label>
+          <input class="field-input" id="fe-c2hours" type="number" value="${r.contractorHours2||''}" min="0">
+        </div>
+        <div class="field">
+          <label class="field-lbl">Pay ($)</label>
+          <input class="field-input" id="fe-c2pay" type="number" value="${r.contractorPay2||''}" min="0">
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('fin-edit-modal').remove()">Cancel</button>
+        <button class="btn btn-gold" id="fe-save-btn" onclick="saveFinEdit('${id}')">Save Changes</button>
+      </div>
+      <div id="fe-status" style="font-size:11px;color:var(--muted2);text-align:center;margin-top:10px"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function saveFinEdit(id) {
+  const btn = document.getElementById('fe-save-btn');
+  const status = document.getElementById('fe-status');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  const deposit    = parseFloat(document.getElementById('fe-deposit').value)||0;
+  const balanceDue = parseFloat(document.getElementById('fe-balance').value)||0;
+  const paid       = document.getElementById('fe-paid').value === '1';
+  const grossAmount= parseFloat(document.getElementById('fe-gross').value)||0;
+  const c1name     = document.getElementById('fe-c1name').value.trim();
+  const c1hours    = document.getElementById('fe-c1hours').value;
+  const c1pay      = document.getElementById('fe-c1pay').value;
+  const c2name     = document.getElementById('fe-c2name').value.trim();
+  const c2hours    = document.getElementById('fe-c2hours').value;
+  const c2pay      = document.getElementById('fe-c2pay').value;
+
+  // Find the record — could be historical or live
+  const hist = (DATA.historicalEvents||[]).find(r => r.id === id);
+  const live = (DATA.events||[]).find(e => e.id === id);
+
+  const payload = {
+    id,
+    date:      hist?.date || live?.eventDate || '',
+    client:    hist?.client || live?.client || '',
+    eventType: hist?.eventType || live?.eventType || '',
+    package:   hist?.package || live?.package || '',
+    deposit,
+    balanceDue,
+    paid,
+    grossAmount,
+    contractorName:   c1name,
+    contractorHours:  c1hours ? parseFloat(c1hours) : '',
+    contractorPay:    c1pay   ? parseFloat(c1pay)   : '',
+    contractorName2:  c2name,
+    contractorHours2: c2hours ? parseFloat(c2hours) : '',
+    contractorPay2:   c2pay   ? parseFloat(c2pay)   : '',
+    hbFees:    hist?.hbFees || 0,
+    travelFee: hist?.travelFee || live?.travelFee || 0,
+    source:    hist?.source || 'manual',
+    notes:     hist?.notes || '',
+  };
+
+  // Also update live event if it exists
+  if (live) {
+    live.deposit = deposit;
+    live.balance = paid ? 0 : balanceDue;
+    live.contractValue = grossAmount - (live.travelFee||0);
+    if (paid) live.status = 'completed';
+  }
+  if (hist) {
+    hist.deposit       = deposit;
+    hist.balanceDue    = balanceDue;
+    hist.paid          = paid;
+    hist.grossAmount   = grossAmount;
+    hist.contractorName  = c1name;
+    hist.contractorHours = c1hours ? parseFloat(c1hours) : hist.contractorHours;
+    hist.contractorPay   = c1pay   ? parseFloat(c1pay)   : hist.contractorPay;
+    hist.contractorName2 = c2name;
+    hist.contractorHours2= c2hours ? parseFloat(c2hours) : hist.contractorHours2;
+    hist.contractorPay2  = c2pay   ? parseFloat(c2pay)   : hist.contractorPay2;
+  }
+
+  try {
+    await apiCall('saveFinancial', payload);
+    if (live) await apiCall('saveEvent', live);
+    document.getElementById('fin-edit-modal').remove();
+    toast('✓ Saved successfully');
+    renderFinancials();
+    renderDashboard();
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Save Changes';
+    if (status) status.textContent = '⚠ Error: ' + e.message;
+  }
 }
 
 function renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, byYear, chartYears, maxGross, thisYear, today) {
