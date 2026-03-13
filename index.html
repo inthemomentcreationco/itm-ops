@@ -2513,6 +2513,7 @@ function renderFinancials() {
       { key:'expenses',     label:'🧾 Expenses' },
       { key:'ledger',       label:'📋 Event Ledger' },
       { key:'tax',          label:'📊 Tax & P&L' },
+      { key:'1099',         label:'📄 1099-NEC' },
       { key:'import',       label:'📥 Import' },
     ].map(t => `<button class="btn ${ft===t.key?'btn-gold':'btn-outline'}" onclick="window._finTab='${t.key}';renderFinancials()" style="padding:6px 14px;font-size:11px">${t.label}</button>`).join('')}
   </div>
@@ -2524,6 +2525,7 @@ function renderFinancials() {
     ${ft === 'expenses' ? renderFinExpenses(expenses, thisYear) : ''}
     ${ft === 'ledger' ? renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) : ''}
     ${ft === 'tax' ? renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, byYear, chartYears, maxGross, thisYear, today) : ''}
+    ${ft === '1099' ? render1099(allRows, thisYear) : ''}
     ${ft === 'import' ? renderFinImport(allHist) : ''}
   </div>
   `;
@@ -3024,6 +3026,151 @@ function renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, 
       `).join('')}
     </div>
   </div>`;
+}
+
+function render1099(allRows, thisYear) {
+  const yearRows = allRows.filter(r => {
+    const d = r.date||r.eventDate||'';
+    return d && new Date(d).getFullYear() === thisYear;
+  });
+
+  // Build per-contractor totals
+  const contractors = {};
+  yearRows.forEach(r => {
+    const add = (name, hours, pay) => {
+      if (!name || name === '-') return;
+      if (!contractors[name]) contractors[name] = { events: 0, hours: 0, pay: 0, eventList: [] };
+      contractors[name].events++;
+      contractors[name].hours += parseFloat(hours) || 0;
+      contractors[name].pay   += parseFloat(pay)   || 0;
+      contractors[name].eventList.push({ client: r.client, date: r.date||r.eventDate||'' });
+    };
+    add(r.contractorName,  r.contractorHours,  r.contractorPay);
+    add(r.contractorName2, r.contractorHours2, r.contractorPay2);
+  });
+
+  const names = Object.keys(contractors).sort();
+  const threshold = 600;
+  const needsForm = names.filter(n => contractors[n].pay >= threshold);
+  const belowThreshold = names.filter(n => contractors[n].pay < threshold);
+
+  if (!names.length) return `<div class="empty"><div class="empty-icon">📄</div><div class="empty-msg">No contractor data for ${thisYear} — add contractors to events in the Ledger tab</div></div>`;
+
+  let html = `
+  <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:20px;font-size:12px;color:var(--muted2);line-height:1.7">
+    <strong style="color:var(--cream)">1099-NEC</strong> is required for any contractor paid <strong style="color:var(--gold)">$600 or more</strong> in a calendar year.
+    File by <strong style="color:var(--cream)">January 31</strong> for the prior year. Give a copy to each contractor and file with the IRS.
+    You'll need each contractor's W-9 (legal name, address, SSN/EIN) — collect these before year end.
+  </div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div class="sec-label" style="margin-bottom:0">${thisYear} Contractor Summary</div>
+    <button class="btn btn-outline" style="font-size:11px;padding:5px 12px" onclick="print1099('${thisYear}')">🖨 Print Summary</button>
+  </div>`;
+
+  if (needsForm.length) {
+    html += `<div style="background:var(--amberbg);border:1px solid var(--amberborder);border-radius:var(--r);padding:10px 16px;margin-bottom:16px;font-size:12px;color:var(--amber)">
+      ⚠ ${needsForm.length} contractor${needsForm.length!==1?'s':''} hit the $600 threshold — 1099-NEC required: <strong>${needsForm.join(', ')}</strong>
+    </div>`;
+  }
+
+  html += `<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>Contractor</th><th>Events</th><th>Total Hours</th><th>Total Paid</th><th>1099 Required?</th></tr></thead>
+    <tbody>
+      ${names.map(name => {
+        const c = contractors[name];
+        const needs1099 = c.pay >= threshold;
+        return `<tr>
+          <td style="font-weight:700;color:var(--cream)">${name}</td>
+          <td>${c.events}</td>
+          <td>${c.hours % 1 === 0 ? c.hours : c.hours.toFixed(1)} hrs</td>
+          <td style="font-weight:700;color:${needs1099?'var(--amber)':'var(--green)'};font-size:14px">$${Math.round(c.pay).toLocaleString()}</td>
+          <td>
+            ${needs1099
+              ? '<span style="color:var(--amber);font-weight:600">✓ Yes — file 1099-NEC</span>'
+              : '<span style="color:var(--muted2)">No — under $600</span>'}
+          </td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>
+
+  <div style="margin-top:24px">
+    <div class="sec-label">Event Breakdown by Contractor</div>
+    ${names.map(name => {
+      const c = contractors[name];
+      const toggleId = '1099_' + name.replace(/\s+/g,'_');
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);margin-bottom:10px;overflow:hidden">
+        <div style="padding:12px 18px;cursor:pointer;display:flex;justify-content:space-between;align-items:center"
+          onclick="var el=document.getElementById('${toggleId}');el.style.display=el.style.display==='none'?'block':'none'">
+          <span style="font-weight:700;color:var(--cream)">${name}</span>
+          <span style="font-size:12px;color:var(--gold)">$${Math.round(c.pay).toLocaleString()} · ${c.events} events · ${c.hours % 1 === 0 ? c.hours : c.hours.toFixed(1)} hrs ▾</span>
+        </div>
+        <div id="${toggleId}" style="display:none;border-top:1px solid var(--border)">
+          <table class="tbl" style="margin:0">
+            <thead><tr><th>Date</th><th>Client</th></tr></thead>
+            <tbody>
+              ${c.eventList.sort((a,b)=>a.date.localeCompare(b.date)).map(e => `<tr>
+                <td style="font-size:11px">${e.date ? new Date(e.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—'}</td>
+                <td>${e.client||'—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+
+  return html;
+}
+
+function print1099(year) {
+  const allRows = [...(DATA.historicalEvents||[])];
+  const yearRows = allRows.filter(r => { const d=r.date||''; return d && new Date(d).getFullYear()===parseInt(year); });
+  const contractors = {};
+  yearRows.forEach(r => {
+    const add = (name, hours, pay) => {
+      if (!name || name === '-') return;
+      if (!contractors[name]) contractors[name] = { events:0, hours:0, pay:0 };
+      contractors[name].events++;
+      contractors[name].hours += parseFloat(hours)||0;
+      contractors[name].pay   += parseFloat(pay)||0;
+    };
+    add(r.contractorName, r.contractorHours, r.contractorPay);
+    add(r.contractorName2, r.contractorHours2, r.contractorPay2);
+  });
+
+  const win = window.open('', '_blank');
+  win.document.write(`<html><head><title>ITM 1099-NEC Summary ${year}</title>
+  <style>body{font-family:Arial,sans-serif;padding:40px;color:#1a1a1a}h1{font-size:22px;margin-bottom:4px}
+  .sub{color:#666;font-size:13px;margin-bottom:30px}table{width:100%;border-collapse:collapse;margin-bottom:30px}
+  th{background:#f5f5f5;padding:10px 14px;text-align:left;font-size:12px;border-bottom:2px solid #ddd}
+  td{padding:10px 14px;border-bottom:1px solid #eee;font-size:13px}
+  .flag{color:#c47a00;font-weight:600}.ok{color:#666}
+  .footer{font-size:11px;color:#999;margin-top:20px;border-top:1px solid #eee;padding-top:16px}
+  </style></head><body>
+  <h1>In The Moment LLC — 1099-NEC Summary</h1>
+  <div class="sub">Tax Year ${year} · Generated ${new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>
+  <table>
+    <thead><tr><th>Contractor Name</th><th>Total Events</th><th>Total Hours</th><th>Total Paid</th><th>1099-NEC Required</th></tr></thead>
+    <tbody>
+      ${Object.keys(contractors).sort().map(name => {
+        const c = contractors[name];
+        const needs = c.pay >= 600;
+        return `<tr>
+          <td><strong>${name}</strong></td>
+          <td>${c.events}</td>
+          <td>${c.hours % 1 === 0 ? c.hours : c.hours.toFixed(1)}</td>
+          <td><strong>$${Math.round(c.pay).toLocaleString()}</strong></td>
+          <td class="${needs?'flag':'ok'}">${needs?'YES — file 1099-NEC':'No (under $600)'}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>
+  <div class="footer">This summary is for reference only. Consult your accountant for filing. You will need each contractor's W-9 (legal name, address, SSN/EIN) to complete the 1099-NEC.</div>
+  </body></html>`);
+  win.document.close();
+  win.print();
 }
 
 function renderFinImport(allHist) {
