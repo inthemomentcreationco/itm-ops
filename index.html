@@ -2427,7 +2427,26 @@ function renderFinancials() {
   // ── CONTRACTOR PAY ──
   const unpaidPay  = payments.filter(p => !p.venmoSent && !p.paid);
   const paidPay    = payments.filter(p => p.venmoSent || p.paid);
-  const owedTotal  = unpaidPay.reduce((s,p) => s+(parseFloat(p.amount)||0), 0);
+  const _paidLog   = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+  const _noCharge  = JSON.parse(localStorage.getItem('itm_pay_overrides') || '{}');
+  const today2     = new Date();
+  let owedTotal = 0, owedCount = 0;
+  allRows.forEach(r => {
+    const d = r.date||r.eventDate||'';
+    if (!d || new Date(d+'T12:00:00') >= today2) return;
+    if (r.contractorName && r.contractorName !== '-') {
+      const key = r.id + '_1';
+      if (!_paidLog[key] && !_noCharge[key] && (parseFloat(r.contractorPay)||0) > 0) {
+        owedTotal += parseFloat(r.contractorPay)||0; owedCount++;
+      }
+    }
+    if (r.contractorName2 && r.contractorName2 !== '-') {
+      const key = r.id + '_2';
+      if (!_paidLog[key] && !_noCharge[key] && (parseFloat(r.contractorPay2)||0) > 0) {
+        owedTotal += parseFloat(r.contractorPay2)||0; owedCount++;
+      }
+    }
+  });
 
   // ── TAX QUARTERLY ──
   const Q = [0,0,0,0];
@@ -2501,7 +2520,7 @@ function renderFinancials() {
     <div style="background:${owedTotal>0?'var(--amberbg)':'var(--greenbg)'};border:1px solid ${owedTotal>0?'var(--amberborder)':'var(--greenborder)'};border-radius:var(--r);padding:14px 18px;cursor:pointer" onclick="window._finTab='contractors';renderFinancials()">
       <div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em">You Owe Contractors</div>
       <div style="font-family:'Cormorant',serif;font-size:32px;color:${owedTotal>0?'var(--amber)':'var(--green)'}">$${Math.round(owedTotal).toLocaleString()}</div>
-      <div style="font-size:11px;color:var(--muted2)">${unpaidPay.length} pending Venmo payment${unpaidPay.length!==1?'s':''} → tap to view</div>
+      <div style="font-size:11px;color:var(--muted2)">${owedCount} unpaid event${owedCount!==1?'s':''} → tap to view</div>
     </div>
   </div>
 
