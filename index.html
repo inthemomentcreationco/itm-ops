@@ -1661,36 +1661,27 @@ function _renderDashboard() {
   const lastMonthRev  = lastMonthRows.reduce((s,r) => s + (r.grossAmount||0), 0);
   const momChange     = lastMonthRev > 0 ? ((thisMonthRev - lastMonthRev) / lastMonthRev * 100) : null;
 
-  // Outstanding invoices — unpaid balance due
-  const unpaidInvoices = allRows
-    .filter(r => !r.paid && (r.balanceDue||0) > 0)
-    .sort((a,b) => (a.date||a.eventDate||'').localeCompare(b.date||b.eventDate||''));
-  const totalOwedToLauren = unpaidInvoices.reduce((s,r) => s + (r.balanceDue||0), 0);
+  // Outstanding invoices — read from historicalEvents (source of truth for balances)
+  const unpaidInvoices = (DATA.historicalEvents||[])
+    .filter(r => !r.paid && (parseFloat(r.balanceDue)||0) > 0)
+    .sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  const totalOwedToLauren = unpaidInvoices.reduce((s,r) => s + (parseFloat(r.balanceDue)||0), 0);
 
-  // What Lauren owes contractors — unpaid assignments
-  const assignments  = DATA.assignments || [];
-  const unpaidAssign = assignments.filter(a => !a.paid);
-  const totalOwedToContractors = unpaidAssign.reduce((s,a) => s + (parseFloat(a.travelShare)||0) +
-    (() => {
-      const ev = liveEvents.find(e => e.id === a.eventId);
-      const c  = (DATA.contractors||[]).find(c => c.id === a.contractorId);
-      if (!ev || !c) return 0;
-      const hrs = parseFloat(a.hours)||0;
-      // We don't store hourly rate directly — use payment records to back-calculate
-      const paid = payments.filter(p => p.contractorId === a.contractorId && p.eventId === a.eventId);
-      if (paid.length) return 0; // already has a payment record
-      return 0; // will show from payments table
-    })(), 0);
-
-  // What Lauren owes contractors — read directly from contractorPay fields in Financials
-  // A contractor is owed if: event is in the past, contractorPay > 0, and not yet marked paid in payments table
-  const paidEventContractorKeys = new Set(payments.filter(p => p.paid || p.venmoSent).map(p => `${p.eventId}_${p.contractorId}`));
-  const owedContractors = allRows.reduce((s, r) => {
-    const isPast = (r.date || r.eventDate || '') < todayStr;
+  // What Lauren owes contractors — read from historicalEvents + paid log
+  const _dashPaidLog  = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+  const _dashNoCharge = JSON.parse(localStorage.getItem('itm_pay_overrides') || '{}');
+  const owedContractors = (DATA.historicalEvents||[]).reduce((s, r) => {
+    const isPast = (r.date||'') < todayStr;
     if (!isPast) return s;
     let owed = 0;
-    if (r.contractorName && parseFloat(r.contractorPay) > 0) owed += parseFloat(r.contractorPay);
-    if (r.contractorName2 && parseFloat(r.contractorPay2) > 0) owed += parseFloat(r.contractorPay2);
+    if (r.contractorName && r.contractorName !== '-' && (parseFloat(r.contractorPay)||0) > 0) {
+      const key = r.id + '_1';
+      if (!_dashPaidLog[key] && !_dashNoCharge[key]) owed += parseFloat(r.contractorPay)||0;
+    }
+    if (r.contractorName2 && r.contractorName2 !== '-' && (parseFloat(r.contractorPay2)||0) > 0) {
+      const key = r.id + '_2';
+      if (!_dashPaidLog[key] && !_dashNoCharge[key]) owed += parseFloat(r.contractorPay2)||0;
+    }
     return s + owed;
   }, 0);
 
@@ -2657,6 +2648,7 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
     let rows = '';
     events.forEach(e => {
       const d = e.date ? new Date(e.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}) : '—';
+      const isUnpaid = !e.paid && !e.noCharge && e.pay > 0;
       const statusCell = e.noCharge
         ? '<span style="font-size:10px;color:var(--muted)">No charge</span>'
         : e.paid
@@ -2665,7 +2657,8 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
             ? '<button class="btn btn-gold" style="font-size:10px;padding:2px 10px" onclick="openMarkContractorPaid(\'' + e.key + '\',\'' + name.replace(/'/g,"\\'") + '\',' + e.pay + ')">Mark Paid</button>'
             : '<span style="font-size:10px;color:var(--muted)">No pay set</span>';
 
-      rows += '<tr style="' + (!e.paid && !e.noCharge && e.pay > 0 ? 'background:rgba(255,180,0,0.04)' : '') + '">' +
+      rows += '<tr style="' + (isUnpaid ? 'background:rgba(255,180,0,0.04)' : '') + '">' +
+        '<td style="width:32px;text-align:center">' + (isUnpaid ? '<input type="checkbox" class="cp-check-' + toggleId + '" data-key="' + e.key + '" data-pay="' + e.pay + '" style="cursor:pointer">' : '') + '</td>' +
         '<td style="font-size:11px">' + d + '</td>' +
         '<td style="color:var(--cream)">' + (e.client||'—') + '</td>' +
         '<td style="color:var(--muted2)">' + (e.hours||'—') + '</td>' +
@@ -2681,13 +2674,22 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
           '<span style="font-size:11px;color:var(--muted2)">' + events.length + ' events</span>' +
           (hasOwed ? '<span style="font-size:11px;color:var(--amber);font-weight:600">⚠ $' + Math.round(owedAmt).toLocaleString() + ' owed</span>' : '<span style="font-size:11px;color:var(--green)">✓ All paid</span>') +
         '</div>' +
-        '<div style="text-align:right">' +
-          '<span style="font-size:11px;color:var(--green)">$' + Math.round(paidAmt).toLocaleString() + ' paid</span>' +
-          (owedAmt > 0 ? '<span style="font-size:11px;color:var(--amber);margin-left:10px">$' + Math.round(owedAmt).toLocaleString() + ' due</span>' : '') +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+          (hasOwed ? '<button class="btn btn-gold" style="font-size:10px;padding:3px 10px" onclick="event.stopPropagation();openMarkAllPaid(\'' + name.replace(/'/g,"\\'") + '\',[' + events.filter(e=>!e.paid&&!e.noCharge&&e.pay>0).map(e=>'\''+e.key+'\'').join(',') + '],' + Math.round(owedAmt) + ')">Mark All Paid</button>' : '') +
+          '<div style="text-align:right">' +
+            '<span style="font-size:11px;color:var(--green)">$' + Math.round(paidAmt).toLocaleString() + ' paid</span>' +
+            (owedAmt > 0 ? '<span style="font-size:11px;color:var(--amber);margin-left:10px">$' + Math.round(owedAmt).toLocaleString() + ' due</span>' : '') +
+          '</div>' +
         '</div>' +
       '</div>' +
       '<div id="' + toggleId + '" style="display:none;border-top:1px solid var(--border)">' +
-        '<table class="tbl" style="margin:0"><thead><tr><th>Date</th><th>Client</th><th>Hours</th><th>Amount Due</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+        (events.filter(e=>!e.paid&&!e.noCharge&&e.pay>0).length > 1 ?
+          '<div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">' +
+            '<input type="checkbox" id="sel-all-' + toggleId + '" onchange="toggleSelectAll(\'' + toggleId + '\',this.checked)" style="cursor:pointer"> ' +
+            '<label for="sel-all-' + toggleId + '" style="font-size:11px;color:var(--muted2);cursor:pointer">Select all unpaid</label>' +
+            '<button class="btn btn-gold" style="font-size:10px;padding:2px 10px;margin-left:auto" onclick="markSelectedPaid(\'' + toggleId + '\',\'' + name.replace(/'/g,"\\'") + '\')">Mark Selected Paid</button>' +
+          '</div>' : '') +
+        '<table class="tbl" style="margin:0"><thead><tr><th></th><th>Date</th><th>Client</th><th>Hours</th><th>Amount Due</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '</div></div>';
   });
 
@@ -2737,6 +2739,65 @@ function confirmContractorPaid(key) {
   document.getElementById('contractor-paid-modal').remove();
   toast('✓ Marked as paid via ' + method);
   renderFinancials();
+  renderDashboard();
+}
+
+function toggleSelectAll(toggleId, checked) {
+  document.querySelectorAll('.cp-check-' + toggleId).forEach(cb => cb.checked = checked);
+}
+
+function markSelectedPaid(toggleId, name) {
+  const checked = Array.from(document.querySelectorAll('.cp-check-' + toggleId + ':checked'));
+  if (!checked.length) { toast('⚠ No events selected'); return; }
+  const keys = checked.map(cb => cb.dataset.key);
+  const total = checked.reduce((s, cb) => s + parseFloat(cb.dataset.pay||0), 0);
+  openMarkAllPaid(name, keys, Math.round(total));
+}
+
+function openMarkAllPaid(name, keys, totalAmt) {
+  const existing = document.getElementById('contractor-paid-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'contractor-paid-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = `
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:28px;width:100%;max-width:380px">
+      <div style="font-family:'Cormorant',serif;font-size:22px;color:var(--cream);margin-bottom:6px">Mark All Paid</div>
+      <div style="font-size:12px;color:var(--muted2);margin-bottom:20px">${name} — <span style="color:var(--gold);font-weight:600">$${totalAmt.toLocaleString()}</span> across ${keys.length} event${keys.length!==1?'s':''}</div>
+      <div class="field" style="margin-bottom:12px">
+        <label class="field-lbl">Payment Method</label>
+        <select class="field-input" id="cp-method">
+          <option value="Venmo">Venmo</option>
+          <option value="Cash">Cash</option>
+          <option value="Zelle">Zelle</option>
+          <option value="Check">Check</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:24px">
+        <label class="field-lbl">Date Paid</label>
+        <input class="field-input" id="cp-date" type="date" value="${new Date().toISOString().split('T')[0]}">
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('contractor-paid-modal').remove()">Cancel</button>
+        <button class="btn btn-gold" onclick="confirmAllContractorPaid(${JSON.stringify(keys)})">✓ Mark All ${keys.length} Paid</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+function confirmAllContractorPaid(keys) {
+  const method = document.getElementById('cp-method').value;
+  const date   = document.getElementById('cp-date').value;
+  const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+  keys.forEach(key => { paidLog[key] = { date, method, markedAt: new Date().toISOString() }; });
+  localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
+  document.getElementById('contractor-paid-modal').remove();
+  toast('✓ Marked ' + keys.length + ' event' + (keys.length!==1?'s':'') + ' as paid via ' + method);
+  renderFinancials();
+  renderDashboard();
 }
 
 function undoContractorPaid(key) {
