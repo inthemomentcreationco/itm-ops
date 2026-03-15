@@ -3276,18 +3276,30 @@ function renderFinImport(allHist) {
     </div>
   </div>
 
-  <div class="sec-label">📤 Import HoneyBook Payments Report</div>
+  <div class="sec-label">📤 Import HoneyBook Reports</div>
   <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:18px">
-    <div style="font-size:12px;color:var(--muted2);margin-bottom:14px;line-height:1.7">
-      Download a fresh <strong style="color:var(--cream)">Payments report</strong> from HoneyBook → Reports, then upload it here.
-      New payments will be added as new rows. Existing rows will have their payment info updated while preserving contractor data.
+    <div style="font-size:12px;color:var(--muted2);margin-bottom:16px;line-height:1.7">
+      Download fresh reports from HoneyBook → Reports and upload both below. The Payments report provides payment amounts and HB fees. The Projects report provides clean client names and event types.
     </div>
-    <div id="csv-drop-zone" ondragover="event.preventDefault();this.style.borderColor='var(--gold)'" ondragleave="this.style.borderColor='var(--border2)'" ondrop="handleCsvDrop(event)"
-      style="border:2px dashed var(--border2);border-radius:8px;padding:24px;text-align:center;margin-bottom:14px;cursor:pointer" onclick="document.getElementById('csv-file-input').click()">
-      <div style="font-size:24px;margin-bottom:6px">📂</div>
-      <div style="color:var(--muted2);font-size:12px">Drop HoneyBook Payments CSV here or click to browse</div>
-      <div style="color:var(--muted);font-size:11px;margin-top:4px">HoneyBook → Reports → Payments → Export CSV</div>
-      <input type="file" id="csv-file-input" accept=".csv" style="display:none" onchange="handleCsvFile(this.files[0])">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+      <div>
+        <div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">Step 1 — Payments Report</div>
+        <div id="pay-drop-zone" ondragover="event.preventDefault();this.style.borderColor='var(--gold)'" ondragleave="this.style.borderColor='var(--border2)'" ondrop="handlePayDrop(event)"
+          style="border:2px dashed var(--border2);border-radius:8px;padding:20px;text-align:center;cursor:pointer" onclick="document.getElementById('pay-file-input').click()">
+          <div id="pay-status" style="font-size:12px;color:var(--muted2)">📂 Drop Payments CSV or click</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:4px">HoneyBook → Reports → Payments</div>
+          <input type="file" id="pay-file-input" accept=".csv" style="display:none" onchange="handlePayFile(this.files[0])">
+        </div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">Step 2 — Projects Report</div>
+        <div id="proj-drop-zone" ondragover="event.preventDefault();this.style.borderColor='var(--gold)'" ondragleave="this.style.borderColor='var(--border2)'" ondrop="handleProjDrop(event)"
+          style="border:2px dashed var(--border2);border-radius:8px;padding:20px;text-align:center;cursor:pointer" onclick="document.getElementById('proj-file-input').click()">
+          <div id="proj-status" style="font-size:12px;color:var(--muted2)">📂 Drop Projects CSV or click</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:4px">HoneyBook → Reports → Projects</div>
+          <input type="file" id="proj-file-input" accept=".csv" style="display:none" onchange="handleProjFile(this.files[0])">
+        </div>
+      </div>
     </div>
     <div id="csv-preview"></div>
     <div id="csv-import-actions" style="display:none;margin-top:12px;display:none">
@@ -3610,14 +3622,199 @@ function handleCsvDrop(e) {
   if (file) handleCsvFile(file);
 }
 
-function handleCsvFile(file) {
+// ── TWO-FILE HONEYBOOK IMPORT ──────────────────────────────
+let _payText = null, _projText = null;
+
+function handlePayDrop(e) { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handlePayFile(f); }
+function handleProjDrop(e) { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleProjFile(f); }
+
+function handlePayFile(file) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = (e) => {
-    const text = e.target.result;
-    previewCsv(text);
+    _payText = e.target.result;
+    const lines = _payText.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.replace(/['"]/g,'').trim());
+    if (!headers.includes('PAYMENT_STATUS')) {
+      document.getElementById('pay-status').innerHTML = '⚠ Not a Payments report';
+      document.getElementById('pay-drop-zone').style.borderColor = 'var(--red)';
+      _payText = null;
+      return;
+    }
+    const count = lines.length - 1;
+    document.getElementById('pay-status').innerHTML = '✓ Payments report loaded (' + count + ' rows)';
+    document.getElementById('pay-drop-zone').style.borderColor = 'var(--green)';
+    tryCombineImport();
   };
   reader.readAsText(file);
+}
+
+function handleProjFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    _projText = e.target.result;
+    const lines = _projText.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.replace(/['"]/g,'').trim());
+    if (!headers.includes('Booked (yes/no)') && !headers.includes('Project Name')) {
+      document.getElementById('proj-status').innerHTML = '⚠ Not a Projects report';
+      document.getElementById('proj-drop-zone').style.borderColor = 'var(--red)';
+      _projText = null;
+      return;
+    }
+    const count = lines.length - 1;
+    document.getElementById('proj-status').innerHTML = '✓ Projects report loaded (' + count + ' rows)';
+    document.getElementById('proj-drop-zone').style.borderColor = 'var(--green)';
+    tryCombineImport();
+  };
+  reader.readAsText(file);
+}
+
+function tryCombineImport() {
+  if (!_payText || !_projText) return; // wait for both files
+  
+  function parseCSV(text) {
+    const lines = text.trim().split('\n').filter(l => l.trim());
+    function parseRow(line) {
+      const result = []; let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === '"') { inQ = !inQ; }
+        else if (line[i] === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
+        else { cur += line[i]; }
+      }
+      result.push(cur.trim());
+      return result;
+    }
+    const headers = parseRow(lines[0]).map(h => h.replace(/['"]/g,'').trim());
+    const rows = lines.slice(1).map(l => parseRow(l));
+    return { headers, rows };
+  }
+
+  const pay  = parseCSV(_payText);
+  const proj = parseCSV(_projText);
+  const clean = (v) => (v||'').toString().replace(/['"$,]/g,'').trim();
+
+  // Parse Projects report — build lookup by Project Name
+  const piName = proj.headers.findIndex(h => h === 'Project Name');
+  const piClient = proj.headers.findIndex(h => h === 'Client Info');
+  const piType = proj.headers.findIndex(h => h === 'Project Type');
+  const piDate = proj.headers.findIndex(h => h === 'Project Date');
+  const piValue = proj.headers.findIndex(h => h === 'Total Project Value');
+  const piPaid = proj.headers.findIndex(h => h === 'Total Paid');
+
+  const projMap = {};
+  proj.rows.forEach(row => {
+    const name = clean(row[piName]);
+    if (!name) return;
+    // Extract clean client name from Client Info: "First Last email@..."
+    const clientRaw = clean(row[piClient]);
+    const parts = clientRaw.split(' ');
+    // Find where email starts (contains @)
+    const emailIdx = parts.findIndex(p => p.includes('@'));
+    const nameParts = emailIdx > 0 ? parts.slice(0, emailIdx) : parts.slice(0, 2);
+    const clientName = nameParts.join(' ');
+    projMap[name] = {
+      clientName: clientName || name,
+      eventType:  clean(row[piType]),
+      date:       clean(row[piDate]),
+      totalValue: parseFloat(clean(row[piValue])) || 0,
+      totalPaid:  parseFloat(clean(row[piPaid])) || 0,
+    };
+  });
+
+  // Parse Payments report — filter paid, group by project name
+  const paName = pay.headers.findIndex(h => h === 'PROJECT_NAME');
+  const paDate = pay.headers.findIndex(h => h === 'PROJECT_DATE');
+  const paStat = pay.headers.findIndex(h => h === 'PAYMENT_STATUS');
+  const paTotal = pay.headers.findIndex(h => h === 'TOTAL_AMOUNT');
+  const paNet = pay.headers.findIndex(h => h === 'NET_AMOUNT');
+
+  const parseDate = (v) => {
+    const s = clean(v);
+    if (!s) return '';
+    const d = new Date(s);
+    return isNaN(d) ? s : d.toISOString().split('T')[0];
+  };
+
+  const grouped = {};
+  pay.rows.forEach(row => {
+    if (clean(row[paStat]).toLowerCase() !== 'paid') return;
+    const name = clean(row[paName]);
+    if (!name) return;
+    if (!grouped[name]) grouped[name] = { name, date: parseDate(row[paDate]), totalAmount: 0, netAmount: 0 };
+    grouped[name].totalAmount += parseFloat(clean(row[paTotal])) || 0;
+    grouped[name].netAmount   += parseFloat(clean(row[paNet])) || 0;
+    if (!grouped[name].date && row[paDate]) grouped[name].date = parseDate(row[paDate]);
+  });
+
+  // Combine: match payment groups with project info
+  const existingHist = DATA.historicalEvents || [];
+  const maxHbNum = existingHist.map(r=>r.id||'').filter(id=>id.startsWith('hb_'))
+    .reduce((max,id) => Math.max(max, parseInt(id.replace('hb_',''))||0), 213);
+  let newIdx = maxHbNum;
+
+  _csvParsed = Object.values(grouped).map(g => {
+    const p = projMap[g.name] || {};
+    const clientName = p.clientName || g.name.replace(/\s+(wedding|birthday|engagement|bridal|corporate|party|event|shower|other|family).*$/i, '').trim();
+    const date = p.date || g.date;
+    const grossAmount = p.totalValue || g.totalAmount;
+    const hbFees = Math.round((g.totalAmount - g.netAmount) * 100) / 100;
+    const balanceDue = Math.max(0, Math.round((grossAmount - g.totalAmount) * 100) / 100);
+    const isPaid = balanceDue === 0;
+
+    // Match existing row by client name + date
+    const existing = existingHist.find(r => {
+      if (r.date !== date) return false;
+      const rc = (r.client||'').toLowerCase();
+      const gc = clientName.toLowerCase();
+      return rc === gc || gc.includes(rc) || rc.includes(gc);
+    });
+    const id = existing ? existing.id : 'hb_'+(++newIdx);
+
+    return {
+      id, client: clientName, date, eventDate: date,
+      grossAmount, hbFees,
+      deposit:    g.totalAmount,
+      balanceDue, paid: isPaid,
+      contractValue: grossAmount,
+      eventType:  p.eventType || '',
+      source:     'honeybook',
+      notes:      existing?.notes || '',
+    };
+  }).filter(r => r.client);
+
+  // Show preview
+  const preview = _csvParsed.slice(0, 5);
+  const newCount = _csvParsed.filter(r => !existingHist.find(e => e.id === r.id)).length;
+  document.getElementById('csv-preview').innerHTML = `
+    <div style="color:var(--green);margin-bottom:8px">✓ Combined ${_csvParsed.length} events (${newCount} new). Preview:</div>
+    <table style="width:100%;font-size:10px;border-collapse:collapse;margin-bottom:10px">
+      <tr style="color:var(--muted);font-family:'JetBrains Mono',monospace">
+        <th style="text-align:left;padding:3px 6px">ID</th>
+        <th style="text-align:left;padding:3px 6px">Client</th>
+        <th style="text-align:left;padding:3px 6px">Date</th>
+        <th style="text-align:left;padding:3px 6px">Type</th>
+        <th style="text-align:right;padding:3px 6px">Gross</th>
+        <th style="text-align:right;padding:3px 6px">Balance</th>
+      </tr>
+      ${preview.map(r=>`<tr style="border-top:1px solid var(--border)">
+        <td style="padding:3px 6px;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:9px">${r.id}</td>
+        <td style="padding:3px 6px;color:var(--cream)">${r.client}</td>
+        <td style="padding:3px 6px;color:var(--muted2)">${r.date||'—'}</td>
+        <td style="padding:3px 6px;color:var(--muted2)">${r.eventType||'—'}</td>
+        <td style="padding:3px 6px;color:var(--gold);text-align:right">$${Math.round(r.grossAmount).toLocaleString()}</td>
+        <td style="padding:3px 6px;color:${r.balanceDue>0?'var(--amber)':'var(--green)'};text-align:right">$${Math.round(r.balanceDue).toLocaleString()}</td>
+      </tr>`).join('')}
+    </table>
+    ${_csvParsed.length > 5 ? `<div style="color:var(--muted);font-size:10px;margin-bottom:8px">...and ${_csvParsed.length - 5} more</div>` : ''}
+  `;
+  document.getElementById('csv-import-actions').style.display = 'block';
+}
+
+// Legacy single-file handler (kept for compatibility)
+function handleCsvFile(file) {
+  if (!file) return;
+  toast('Please use the two-file import above — upload both Payments and Projects reports.');
 }
 
 function previewCsv(text) {
@@ -3693,12 +3890,21 @@ function previewCsv(text) {
   let newIdx = maxHbNum;
 
   _csvParsed = Object.values(grouped).map(g => {
-    const existing = existingHist.find(r => r.client === g.client && r.date === g.date);
+    // Match by date first, then check if client name is contained in project name or vice versa
+    const existing = existingHist.find(r => {
+      if (r.date !== g.date) return false;
+      const rc = (r.client||'').toLowerCase();
+      const gc = (g.client||'').toLowerCase();
+      return rc === gc || gc.includes(rc) || rc.includes(gc);
+    });
     const id = existing ? existing.id : 'hb_'+(++newIdx);
     const hbFees = Math.round((g.totalAmount - g.netAmount) * 100) / 100;
+    // Use existing client name if matched, otherwise strip event type suffixes from project name
+    const clientName = existing ? existing.client : g.client
+      .replace(/\s+(wedding|birthday|engagement|bridal|corporate|party|event|shower|other|family).*$/i, '').trim();
     return {
       id,
-      client:       g.client,
+      client:       clientName,
       date:         g.date,
       eventDate:    g.date,
       grossAmount:  g.totalAmount,
