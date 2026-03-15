@@ -3702,21 +3702,28 @@ function tryCombineImport() {
   const piValue = proj.headers.findIndex(h => h === 'Total Project Value');
   const piPaid = proj.headers.findIndex(h => h === 'Total Paid');
 
+  // Only include booked projects with actual value
+  const piBooked = proj.headers.findIndex(h => h === 'Booked (yes/no)');
   const projMap = {};
   proj.rows.forEach(row => {
     const name = clean(row[piName]);
     if (!name) return;
+    // Only use booked projects
+    const booked = clean(row[piBooked] || '').toLowerCase();
+    if (booked !== 'yes') return;
     // Extract clean client name from Client Info: "First Last email@..."
     const clientRaw = clean(row[piClient]);
     const parts = clientRaw.split(' ');
-    // Find where email starts (contains @)
     const emailIdx = parts.findIndex(p => p.includes('@'));
     const nameParts = emailIdx > 0 ? parts.slice(0, emailIdx) : parts.slice(0, 2);
     const clientName = nameParts.join(' ');
-    projMap[name] = {
+    const date = clean(row[piDate]);
+    // Key by name+date to avoid matching wrong Cicely Wedding
+    const key = name + '|' + date;
+    projMap[key] = {
       clientName: clientName || name,
       eventType:  clean(row[piType]),
-      date:       clean(row[piDate]),
+      date,
       totalValue: parseFloat(clean(row[piValue])) || 0,
       totalPaid:  parseFloat(clean(row[piPaid])) || 0,
     };
@@ -3753,8 +3760,9 @@ function tryCombineImport() {
     .reduce((max,id) => Math.max(max, parseInt(id.replace('hb_',''))||0), 213);
   let newIdx = maxHbNum;
 
-  _csvParsed = Object.values(grouped).map(g => {
-    const p = projMap[g.name] || {};
+  _csvParsed = Object.values(grouped).filter(g => g.totalAmount > 0).map(g => {
+    // Match project by name+date to avoid wrong matches
+    const p = projMap[g.name + '|' + g.date] || projMap[g.name + '|' + (new Date(g.date).toISOString().split('T')[0])] || Object.values(projMap).find(pv => pv.name === g.name) || {};
     const clientName = p.clientName || g.name.replace(/\s+(wedding|birthday|engagement|bridal|corporate|party|event|shower|other|family).*$/i, '').trim();
     const date = p.date || g.date;
     const grossAmount = p.totalValue || g.totalAmount;
@@ -3974,7 +3982,7 @@ async function confirmCsvImport() {
           contractorHours:rec.contractorHours || '',
           contractorPay:  rec.contractorPay || 0,
           travelSplit:    rec.travelSplit || 0,
-          source:         rec.source || 'HoneyBook Import',
+          source:         rec.source || 'honeybook',
           notes:          rec.notes || '',
         });
         saved++;
