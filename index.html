@@ -3636,11 +3636,11 @@ function previewCsv(text) {
   const headers = parseRow(lines[0]);
   const rows    = lines.slice(1).map(l => parseRow(l));
 
-  // Get column mapping
-  const clientCol = document.getElementById('map-client').value.trim() || 'Contact Name';
-  const dateCol   = document.getElementById('map-date').value.trim()   || 'Event Date';
-  const amountCol = document.getElementById('map-amount').value.trim() || 'Total Paid';
-  const typeCol   = document.getElementById('map-type').value.trim()   || 'Project Type';
+  // Use HoneyBook column names directly
+  const clientCol = 'Project Name';
+  const dateCol   = 'Project Date';
+  const amountCol = 'Total Project Value';
+  const typeCol   = 'Project Type';
 
   const ci = headers.findIndex(h => h.toLowerCase().includes(clientCol.toLowerCase()));
   const di = headers.findIndex(h => h.toLowerCase().includes(dateCol.toLowerCase()));
