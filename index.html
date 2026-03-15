@@ -3276,13 +3276,17 @@ function renderFinImport(allHist) {
     </div>
   </div>
 
-  <div class="sec-label">📤 Import Custom CSV</div>
+  <div class="sec-label">📤 Import HoneyBook Payments Report</div>
   <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:18px">
+    <div style="font-size:12px;color:var(--muted2);margin-bottom:14px;line-height:1.7">
+      Download a fresh <strong style="color:var(--cream)">Payments report</strong> from HoneyBook → Reports, then upload it here.
+      New payments will be added as new rows. Existing rows will have their payment info updated while preserving contractor data.
+    </div>
     <div id="csv-drop-zone" ondragover="event.preventDefault();this.style.borderColor='var(--gold)'" ondragleave="this.style.borderColor='var(--border2)'" ondrop="handleCsvDrop(event)"
       style="border:2px dashed var(--border2);border-radius:8px;padding:24px;text-align:center;margin-bottom:14px;cursor:pointer" onclick="document.getElementById('csv-file-input').click()">
       <div style="font-size:24px;margin-bottom:6px">📂</div>
-      <div style="color:var(--muted2);font-size:12px">Drop CSV here or click to browse</div>
-      <div style="color:var(--muted);font-size:11px;margin-top:4px">Expected columns: Date, Client, Event Type, Amount, Balance Due</div>
+      <div style="color:var(--muted2);font-size:12px">Drop HoneyBook Payments CSV here or click to browse</div>
+      <div style="color:var(--muted);font-size:11px;margin-top:4px">HoneyBook → Reports → Payments → Export CSV</div>
       <input type="file" id="csv-file-input" accept=".csv" style="display:none" onchange="handleCsvFile(this.files[0])">
     </div>
     <div id="csv-preview"></div>
@@ -3636,46 +3640,78 @@ function previewCsv(text) {
   const headers = parseRow(lines[0]);
   const rows    = lines.slice(1).map(l => parseRow(l));
 
-  // Use HoneyBook column names directly
-  const clientCol = 'Project Name';
-  const dateCol   = 'Project Date';
-  const amountCol = 'Total Project Value';
-  const typeCol   = 'Project Type';
+  // Auto-detect HoneyBook Payments report by checking for PAYMENT_STATUS column
+  const isPaymentsReport = headers.some(h => h.trim() === 'PAYMENT_STATUS');
 
-  const ci = headers.findIndex(h => h.toLowerCase().includes(clientCol.toLowerCase()));
-  const di = headers.findIndex(h => h.toLowerCase().includes(dateCol.toLowerCase()));
-  const ai = headers.findIndex(h => h.toLowerCase().includes(amountCol.toLowerCase()));
-  const ti = headers.findIndex(h => h.toLowerCase().includes(typeCol.toLowerCase()));
-
-  if (ci < 0 && di < 0 && ai < 0) {
+  if (!isPaymentsReport) {
     document.getElementById('csv-preview').innerHTML = `
-      <div style="color:var(--red);margin-bottom:8px">⚠ Could not find matching columns. Headers found in your CSV:</div>
-      <div style="color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${headers.join(', ')}</div>
-      <div style="color:var(--muted2);margin-top:8px;font-size:11px">Update the column mapping fields above to match your CSV headers exactly.</div>
+      <div style="color:var(--red);margin-bottom:8px">⚠ This doesn't look like a HoneyBook Payments report.</div>
+      <div style="color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${headers.slice(0,8).join(', ')}...</div>
+      <div style="color:var(--muted2);margin-top:8px;font-size:11px">Please download the <strong>Payments report</strong> from HoneyBook → Reports and upload that file.</div>
     `;
     return;
   }
 
-  // Match existing hb_ rows by client name + date, or assign new sequential hb_ IDs
+  // Column indices for payments report
+  const ci  = headers.findIndex(h => h.trim() === 'PROJECT_NAME');
+  const di  = headers.findIndex(h => h.trim() === 'PROJECT_DATE');
+  const sti = headers.findIndex(h => h.trim() === 'PAYMENT_STATUS');
+  const tai = headers.findIndex(h => h.trim() === 'TOTAL_AMOUNT');
+  const nai = headers.findIndex(h => h.trim() === 'NET_AMOUNT');
+  const tfi = headers.findIndex(h => h.trim() === 'TRANSACTION_FEE');
+
+  const clean = (v) => (v||'').toString().replace(/['"$,]/g,'').trim();
+  const parseDate = (v) => {
+    const s = clean(v);
+    if (!s) return '';
+    // Try "Sep 22, 2023" format
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toISOString().split('T')[0];
+    return s;
+  };
+
+  // Filter to paid rows only
+  const paidRows = rows.filter(row => clean(row[sti]).toLowerCase() === 'paid');
+
+  // Group by PROJECT_NAME + PROJECT_DATE — sum TOTAL_AMOUNT and NET_AMOUNT per project per date
+  const grouped = {};
+  paidRows.forEach(row => {
+    const client = clean(row[ci]);
+    const date   = parseDate(row[di]);
+    if (!client) return;
+    const key = client + '|' + date;
+    if (!grouped[key]) grouped[key] = { client, date, totalAmount: 0, netAmount: 0, txFee: 0 };
+    grouped[key].totalAmount += parseFloat(clean(row[tai])) || 0;
+    grouped[key].netAmount   += parseFloat(clean(row[nai])) || 0;
+    grouped[key].txFee       += parseFloat(clean(row[tfi])) || 0;
+  });
+
+  // Match existing hb_ rows or assign new IDs
   const existingHist = DATA.historicalEvents || [];
   const maxHbNum = existingHist.map(r=>r.id||'').filter(id=>id.startsWith('hb_'))
     .reduce((max,id) => Math.max(max, parseInt(id.replace('hb_',''))||0), 213);
   let newIdx = maxHbNum;
 
-  _csvParsed = rows.map((row) => {
-    const client = ci >= 0 ? (row[ci] || '').replace(/^"|"$/g,'') : 'Unknown';
-    const date   = di >= 0 ? (row[di] || '').replace(/^"|"$/g,'') : '';
-    const existing = existingHist.find(r => r.client === client && r.date === date);
+  _csvParsed = Object.values(grouped).map(g => {
+    const existing = existingHist.find(r => r.client === g.client && r.date === g.date);
     const id = existing ? existing.id : 'hb_'+(++newIdx);
+    const hbFees = Math.round((g.totalAmount - g.netAmount) * 100) / 100;
     return {
       id,
-      client,
-      eventDate:    date,
-      contractValue:ai >= 0 ? +(row[ai] || '').replace(/[$,'"]/g,'') || 0 : 0,
-      eventType:    ti >= 0 ? (row[ti] || '').replace(/^"|"$/g,'') : '',
+      client:       g.client,
+      date:         g.date,
+      eventDate:    g.date,
+      grossAmount:  g.totalAmount,
+      hbFees:       hbFees,
+      deposit:      g.totalAmount, // paid in full since these are completed payments
+      balanceDue:   0,
+      paid:         true,
+      contractValue:g.totalAmount,
+      eventType:    existing?.eventType || '',
       source:       'honeybook',
+      notes:        existing?.notes || '',
     };
-  }).filter(r => r.client && r.client !== 'Unknown');
+  }).filter(r => r.client);
 
   const preview = _csvParsed.slice(0, 5);
   document.getElementById('csv-preview').innerHTML = `
