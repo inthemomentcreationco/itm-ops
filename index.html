@@ -3656,14 +3656,26 @@ function previewCsv(text) {
     return;
   }
 
-  _csvParsed = rows.map((row, idx) => ({
-    id:           'hist_'+Date.now()+'_'+idx,
-    client:       ci >= 0 ? (row[ci] || '').replace(/^"|"$/g,'') : 'Unknown',
-    eventDate:    di >= 0 ? (row[di] || '').replace(/^"|"$/g,'') : '',
-    contractValue:ai >= 0 ? +(row[ai] || '').replace(/[$,'"]/g,'') || 0 : 0,
-    eventType:    ti >= 0 ? (row[ti] || '').replace(/^"|"$/g,'') : '',
-    source:       'csv-import',
-  })).filter(r => r.client && r.client !== 'Unknown');
+  // Match existing hb_ rows by client name + date, or assign new sequential hb_ IDs
+  const existingHist = DATA.historicalEvents || [];
+  const maxHbNum = existingHist.map(r=>r.id||'').filter(id=>id.startsWith('hb_'))
+    .reduce((max,id) => Math.max(max, parseInt(id.replace('hb_',''))||0), 213);
+  let newIdx = maxHbNum;
+
+  _csvParsed = rows.map((row) => {
+    const client = ci >= 0 ? (row[ci] || '').replace(/^"|"$/g,'') : 'Unknown';
+    const date   = di >= 0 ? (row[di] || '').replace(/^"|"$/g,'') : '';
+    const existing = existingHist.find(r => r.client === client && r.date === date);
+    const id = existing ? existing.id : 'hb_'+(++newIdx);
+    return {
+      id,
+      client,
+      eventDate:    date,
+      contractValue:ai >= 0 ? +(row[ai] || '').replace(/[$,'"]/g,'') || 0 : 0,
+      eventType:    ti >= 0 ? (row[ti] || '').replace(/^"|"$/g,'') : '',
+      source:       'honeybook',
+    };
+  }).filter(r => r.client && r.client !== 'Unknown');
 
   const preview = _csvParsed.slice(0, 5);
   document.getElementById('csv-preview').innerHTML = `
