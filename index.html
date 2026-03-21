@@ -2396,6 +2396,13 @@ function renderFinancials() {
     _live:         e,
   });});
   const allRows    = [...liveRows, ...hbRows];
+
+  // ── SMM (SPILLED MILK) — visibility only, still in totals ──
+  const isSMM = r => (r.client||'').toLowerCase().includes('spilled milk');
+  const smmRows    = allRows.filter(isSMM);
+  const smmYear    = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
+  const smmGross   = smmYear.reduce((s,r) => s+(r.grossAmount||0), 0);
+
   const yearRows   = allRows.filter(r => { const d = r.date||r.eventDate||''; return d && new Date(d).getFullYear() === thisYear; });
   const sortedYear = [...yearRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
 
@@ -2499,7 +2506,11 @@ function renderFinancials() {
       <div class="stat-val">$${(postTax/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:${postTax>=FIN.ownSalaryGoal?'var(--green)':'var(--red)'};margin-top:4px">${postTax>=FIN.ownSalaryGoal?'✓ Meets goal':'⚠ Below goal'} of $${(FIN.ownSalaryGoal/1000).toFixed(0)}k</div>
     </div>
-  </div>
+    <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._finTab='smm';renderFinancials()">
+      <div class="stat-lbl" style="color:var(--gold)">📱 SMM (Spilled Milk)</div>
+      <div class="stat-val" style="color:var(--gold)">$${(smmGross/1000).toFixed(1)}k</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${grossRev>0?Math.round(smmGross/grossRev*100):0}% of gross · ${smmYear.length} invoice${smmYear.length!==1?'s':''} · tap to view</div>
+    </div>
 
   <!-- MONEY ALERT ROW -->
   ${ (() => {
@@ -2527,6 +2538,7 @@ function renderFinancials() {
       { key:'contractors',  label:'👤 Contractor Pay' },
       { key:'expenses',     label:'🧾 Expenses' },
       { key:'ledger',       label:'📋 Event Ledger' },
+      { key:'smm',          label:'📱 SMM' },
       { key:'tax',          label:'📊 Tax & P&L' },
       { key:'1099',         label:'📄 1099-NEC' },
       { key:'import',       label:'📥 Import' },
@@ -2539,6 +2551,7 @@ function renderFinancials() {
     ${ft === 'contractors' ? renderFinContractors(unpaidPay, paidPay, payments, liveEvents) : ''}
     ${ft === 'expenses' ? renderFinExpenses(expenses, thisYear) : ''}
     ${ft === 'ledger' ? renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) : ''}
+    ${ft === 'smm' ? renderFinSMM(smmRows, thisYear) : ''}
     ${ft === 'tax' ? renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, byYear, chartYears, maxGross, thisYear, today) : ''}
     ${ft === '1099' ? render1099(allRows, thisYear) : ''}
     ${ft === 'import' ? renderFinImport(allHist) : ''}
@@ -3111,6 +3124,87 @@ function renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, 
       `).join('')}
     </div>
   </div>`;
+}
+
+function renderFinSMM(smmRows, thisYear) {
+  if (!smmRows.length) return `<div style="text-align:center;padding:40px;color:var(--muted)">No Spilled Milk entries found.</div>`;
+
+  const sorted = [...smmRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
+  const yearRows = sorted.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
+  const allTime  = sorted;
+
+  const totalGross = yearRows.reduce((s,r) => s+(r.grossAmount||0), 0);
+  const totalContr = yearRows.reduce((s,r) => s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0), 0);
+  const totalNet   = totalGross - totalContr;
+
+  const rows = r => `
+    <tr>
+      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.date||r.eventDate||'—'}</td>
+      <td style="padding:10px 12px;font-size:12px">${r.eventType||'—'}</td>
+      <td style="padding:10px 12px;font-size:12px;font-weight:600">$${Math.round(r.grossAmount||0).toLocaleString()}</td>
+      <td style="padding:10px 12px;font-size:12px;color:var(--amber)">${(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0) > 0 ? '$'+Math.round((parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0)).toLocaleString() : '—'}</td>
+      <td style="padding:10px 12px;font-size:12px;color:var(--green);font-weight:600">$${Math.round((r.grossAmount||0) - (parseFloat(r.contractorPay)||0) - (parseFloat(r.contractorPay2)||0)).toLocaleString()}</td>
+      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.notes||'—'}</td>
+    </tr>`;
+
+  return `
+  <div style="margin-bottom:16px">
+    <div style="font-family:'Cormorant',serif;font-size:20px;margin-bottom:4px">📱 Spilled Milk — Social Media Management</div>
+    <div style="font-size:12px;color:var(--muted)">Recurring SMM client. Included in all revenue totals above.</div>
+  </div>
+
+  <div class="stats-row" style="margin-bottom:20px">
+    <div class="stat-card gold">
+      <div class="stat-lbl">${thisYear} SMM Revenue</div>
+      <div class="stat-val">$${Math.round(totalGross).toLocaleString()}</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${yearRows.length} invoice${yearRows.length!==1?'s':''}</div>
+    </div>
+    <div class="stat-card amber">
+      <div class="stat-lbl">Contractor Costs</div>
+      <div class="stat-val">$${Math.round(totalContr).toLocaleString()}</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">Logged in financials</div>
+    </div>
+    <div class="stat-card green">
+      <div class="stat-lbl">Net to Lauren</div>
+      <div class="stat-val">$${Math.round(totalNet).toLocaleString()}</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">After contractor costs</div>
+    </div>
+  </div>
+
+  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:8px">${thisYear} Invoices</div>
+  <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:24px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:var(--s1)">
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Date</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Type</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Billed</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Contractor</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Net</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Notes</th>
+        </tr>
+      </thead>
+      <tbody>${yearRows.map(rows).join('')}</tbody>
+    </table>
+  </div>
+
+  ${allTime.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()!==thisYear; }).length > 0 ? `
+  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:8px">Prior Years</div>
+  <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:var(--s1)">
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Date</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Type</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Billed</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Contractor</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Net</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Notes</th>
+        </tr>
+      </thead>
+      <tbody>${allTime.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()!==thisYear; }).map(rows).join('')}</tbody>
+    </table>
+  </div>` : ''}`;
 }
 
 function render1099(allRows, thisYear) {
