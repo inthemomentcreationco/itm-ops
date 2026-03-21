@@ -2094,7 +2094,7 @@ function showDrill(title, rows, type) {
   const body = document.getElementById('drillBody');
   if (!rows || !rows.length) { body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">No data found.</div>'; document.getElementById('drillModal').classList.add('open'); return; }
 
-  const thS = 'style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)"';
+  const thS = 'style="padding:8px 12px;text-align:left;font-size:10px;font-family:JetBrains Mono,monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)"';
   const tdS = (extra='') => `style="padding:10px 12px;font-size:12px${extra}"`;
 
   let html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">';
