@@ -2402,7 +2402,7 @@ function renderFinancials() {
   const smmRows    = allRows.filter(isSMM);
   const smmYear    = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
   const smmAllGross = smmRows.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
-  const smmGross   = smmAllGross;
+  const smmGross   = smmYear.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
 
   const yearRows   = allRows.filter(r => { const d = r.date||r.eventDate||''; return d && new Date(d).getFullYear() === thisYear; });
   const sortedYear = [...yearRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
@@ -2510,7 +2510,7 @@ function renderFinancials() {
     <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._finTab='smm';renderFinancials()">
       <div class="stat-lbl" style="color:var(--gold)">📱 SMM (Spilled Milk)</div>
       <div class="stat-val" style="color:var(--gold)">$${(smmGross/1000).toFixed(1)}k</div>
-      <div style="font-size:10px;color:var(--muted2);margin-top:4px">All-time · ${smmRows.length} invoice${smmRows.length!==1?'s':''} · tap to view</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${thisYear} · ${smmYear.length} invoice${smmYear.length!==1?'s':''} · tap to view</div>
     </div>
   </div>
 
