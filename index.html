@@ -2401,7 +2401,8 @@ function renderFinancials() {
   const isSMM = r => (r.client||'').toLowerCase().includes('spilled milk');
   const smmRows    = allRows.filter(isSMM);
   const smmYear    = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
-  const smmGross   = smmYear.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
+  const smmAllGross = smmRows.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
+  const smmGross   = smmAllGross;
 
   const yearRows   = allRows.filter(r => { const d = r.date||r.eventDate||''; return d && new Date(d).getFullYear() === thisYear; });
   const sortedYear = [...yearRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
@@ -2509,7 +2510,7 @@ function renderFinancials() {
     <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._finTab='smm';renderFinancials()">
       <div class="stat-lbl" style="color:var(--gold)">📱 SMM (Spilled Milk)</div>
       <div class="stat-val" style="color:var(--gold)">$${(smmGross/1000).toFixed(1)}k</div>
-      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${grossRev>0?Math.round(smmGross/grossRev*100):0}% of gross · ${smmYear.length} invoice${smmYear.length!==1?'s':''} · tap to view</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">All-time · ${smmRows.length} invoice${smmRows.length!==1?'s':''} · tap to view</div>
     </div>
   </div>
 
@@ -3130,51 +3131,50 @@ function renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, 
 function renderFinSMM(smmRows, thisYear) {
   if (!smmRows.length) return `<div style="text-align:center;padding:40px;color:var(--muted)">No Spilled Milk entries found.</div>`;
 
-  const sorted = [...smmRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
-  const yearRows = sorted.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
-  const allTime  = sorted;
+  const sorted = [...smmRows].filter(r => r.date||r.eventDate).sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
 
-  const totalGross = yearRows.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
-  const totalContr = yearRows.reduce((s,r) => s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0), 0);
+  const totalGross = sorted.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
+  const totalContr = sorted.reduce((s,r) => s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0), 0);
   const totalNet   = totalGross - totalContr;
 
+  const byYear = {};
+  sorted.forEach(r => {
+    const y = new Date(r.date||r.eventDate).getFullYear();
+    if (!byYear[y]) byYear[y] = [];
+    byYear[y].push(r);
+  });
+  const years = Object.keys(byYear).sort((a,b) => b-a);
+
   const rowHtml = r => {
-    const gross  = parseFloat(r.grossAmount)||0;
-    const contr  = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0);
-    const net    = gross - contr;
-    return `
-    <tr>
-      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.date||r.eventDate||'—'}</td>
+    const gross = parseFloat(r.grossAmount)||0;
+    const contr = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0);
+    const net   = gross - contr;
+    return `<tr>
+      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.date||r.eventDate||'\u2014'}</td>
       <td style="padding:10px 12px;font-size:12px">${r.client||'Spilled Milk'}</td>
-      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.eventType||'—'}</td>
+      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.eventType||'\u2014'}</td>
       <td style="padding:10px 12px;font-size:12px;font-weight:600">$${Math.round(gross).toLocaleString()}</td>
-      <td style="padding:10px 12px;font-size:12px;color:var(--amber)">${contr > 0 ? '$'+Math.round(contr).toLocaleString() : '—'}</td>
+      <td style="padding:10px 12px;font-size:12px;color:var(--amber)">${contr > 0 ? '$'+Math.round(contr).toLocaleString() : '\u2014'}</td>
       <td style="padding:10px 12px;font-size:12px;color:var(--green);font-weight:600">$${Math.round(net).toLocaleString()}</td>
-      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.notes||'—'}</td>
+      <td style="padding:10px 12px;font-size:12px;color:var(--muted)">${r.notes||'\u2014'}</td>
     </tr>`;};
 
   const thStyle = `style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)"`;
   const thead = `<thead><tr style="background:var(--s1)">
-    <th ${thStyle}>Date</th>
-    <th ${thStyle}>Client</th>
-    <th ${thStyle}>Type</th>
-    <th ${thStyle}>Billed</th>
-    <th ${thStyle}>Contractor</th>
-    <th ${thStyle}>Net</th>
-    <th ${thStyle}>Notes</th>
+    <th ${thStyle}>Date</th><th ${thStyle}>Client</th><th ${thStyle}>Type</th>
+    <th ${thStyle}>Billed</th><th ${thStyle}>Contractor</th><th ${thStyle}>Net</th><th ${thStyle}>Notes</th>
   </tr></thead>`;
 
   return `
   <div style="margin-bottom:16px">
-    <div style="font-family:'Cormorant',serif;font-size:20px;margin-bottom:4px">📱 Spilled Milk — Social Media Management</div>
-    <div style="font-size:12px;color:var(--muted)">Recurring SMM client. Included in all revenue totals above.</div>
+    <div style="font-family:'Cormorant',serif;font-size:20px;margin-bottom:4px">\ud83d\udcf1 Spilled Milk \u2014 Social Media Management</div>
+    <div style="font-size:12px;color:var(--muted)">Recurring SMM client. Included in all revenue totals.</div>
   </div>
-
   <div class="stats-row" style="margin-bottom:20px">
     <div class="stat-card gold">
-      <div class="stat-lbl">${thisYear} SMM Revenue</div>
+      <div class="stat-lbl">All-Time SMM Revenue</div>
       <div class="stat-val">$${Math.round(totalGross).toLocaleString()}</div>
-      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${yearRows.length} invoice${yearRows.length!==1?'s':''}</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${sorted.length} invoice${sorted.length!==1?'s':''}</div>
     </div>
     <div class="stat-card amber">
       <div class="stat-lbl">Contractor Costs</div>
@@ -3187,23 +3187,15 @@ function renderFinSMM(smmRows, thisYear) {
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">After contractor costs</div>
     </div>
   </div>
-
-  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:8px">${thisYear} Invoices</div>
-  <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:24px">
-    <table style="width:100%;border-collapse:collapse">
-      ${thead}
-      <tbody>${yearRows.map(rowHtml).join('')}</tbody>
-    </table>
-  </div>
-
-  ${allTime.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()!==thisYear; }).length > 0 ? `
-  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:8px">Prior Years</div>
-  <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
-    <table style="width:100%;border-collapse:collapse">
-      ${thead}
-      <tbody>${allTime.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()!==thisYear; }).map(rowHtml).join('')}</tbody>
-    </table>
-  </div>` : ''}`;
+  ${years.map(y => {
+    const yRows = byYear[y];
+    const yGross = yRows.reduce((s,r)=>s+(parseFloat(r.grossAmount)||0),0);
+    return `
+    <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:8px">${y} \u00b7 $${Math.round(yGross).toLocaleString()} billed \u00b7 ${yRows.length} invoice${yRows.length!==1?'s':''}</div>
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px">
+      <table style="width:100%;border-collapse:collapse">${thead}<tbody>${yRows.map(rowHtml).join('')}</tbody></table>
+    </div>`;
+  }).join('')}`;
 }
 
 function render1099(allRows, thisYear) {
