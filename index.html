@@ -589,6 +589,14 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
   <div class="detail-panel" id="detailPanel"></div>
 </div>
 
+<!-- DRILL-DOWN MODAL -->
+<div class="modal-overlay" id="drillModal" onclick="if(event.target===this)closeDrill()">
+  <div class="modal" style="max-width:700px;max-height:80vh;overflow-y:auto">
+    <div class="modal-title" id="drillTitle">Details <button class="panel-close" onclick="closeDrill()">✕</button></div>
+    <div id="drillBody"></div>
+  </div>
+</div>
+
 <!-- CONTRACTOR ASSIGNMENT MODAL (shown right after booking) -->
 <div class="modal-overlay" id="assignModal">
   <div class="modal" style="max-width:500px">
@@ -1705,17 +1713,17 @@ function _renderDashboard() {
         <div class="stat-val">${needsResponse.length}</div>
         <div class="stat-sub">${needsResponse.length?'tap to respond':'All caught up ✓'}</div>
       </div>
-      <div class="stat-card ${conflicts.length?'red':'green'}">
+      <div class="stat-card ${conflicts.length?'red':'green'}" style="cursor:${conflicts.length?'pointer':'default'}" onclick="${conflicts.length?`showDrill('Date Conflicts — Inquiry vs Booked',${JSON.stringify(conflicts.map(r=>({name:r.name,eventDate:r.eventDate,eventType:r.eventType,budget:r.budget,stage:r.stage})))}, 'inquiries')`:''}">
         <div class="stat-lbl">Date Conflicts</div>
         <div class="stat-val">${conflicts.length}</div>
-        <div class="stat-sub">${conflicts.length?'inquiry vs booked':'None ✓'}</div>
+        <div class="stat-sub">${conflicts.length?'tap to view':'None ✓'}</div>
       </div>
-      <div class="stat-card ${doubleBooked.length?'amber':'green'}">
+      <div class="stat-card ${doubleBooked.length?'amber':'green'}" style="cursor:${doubleBooked.length?'pointer':'default'}" onclick="${doubleBooked.length?`showDrill('Double-Booked Dates',${JSON.stringify(doubleBooked.map(r=>({name:r.client||r.name,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')`:''}">
         <div class="stat-lbl">Double-Booked</div>
         <div class="stat-val">${doubleBooked.length}</div>
-        <div class="stat-sub">${doubleBooked.length?'same day conflicts':'None ✓'}</div>
+        <div class="stat-sub">${doubleBooked.length?'tap to view':'None ✓'}</div>
       </div>
-      <div class="stat-card gold">
+      <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('Booked Events — Next 60 Days',${JSON.stringify(upcomingEvents.map(r=>({name:r.client,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:(r.contractValue||r.grossAmount||0)+(r.travelFee||0),balanceDue:r.balance||r.balanceDue||0,paid:!r.balance&&(r.deposit||0)>0})))}, 'events')">
         <div class="stat-lbl">Booked Events</div>
         <div class="stat-val">${upcomingEvents.length}</div>
         <div class="stat-sub">in next 60 days</div>
@@ -1724,24 +1732,24 @@ function _renderDashboard() {
 
     <!-- ROW 2: FINANCIAL ALERTS -->
     <div class="stats-row" style="margin-bottom:20px">
-      <div class="stat-card ${totalOwedToLauren>0?'amber':'green'}" style="cursor:pointer" onclick="navigate('financials')">
+      <div class="stat-card ${totalOwedToLauren>0?'amber':'green'}" style="cursor:pointer" onclick="showDrill('Outstanding Invoices — Clients Owe You',${JSON.stringify(unpaidInvoices.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:false})))}, 'invoices')">
         <div class="stat-lbl">Outstanding Invoices</div>
         <div class="stat-val">$${Math.round(totalOwedToLauren).toLocaleString()}</div>
         <div class="stat-sub">${unpaidInvoices.length} client${unpaidInvoices.length!==1?'s':''} owe money</div>
       </div>
-      <div class="stat-card ${owedContractors>0?'amber':'green'}" style="cursor:pointer" onclick="navigate('financials')">
+      <div class="stat-card ${owedContractors>0?'amber':'green'}" style="cursor:pointer" onclick="(() => { const _pLog=JSON.parse(localStorage.getItem('itm_contractor_paid')||'{}'); const _noc=JSON.parse(localStorage.getItem('itm_pay_overrides')||'{}'); const today2=new Date(); const owedRows=(DATA.historicalEvents||[]).filter(r=>{ const d=r.date||''; if(!d||new Date(d+'T12:00:00')>=today2) return false; if(r.contractorName&&r.contractorName!=='-'&&(parseFloat(r.contractorPay)||0)>0&&!_pLog[r.id+'_1']&&!_noc[r.id+'_1']) return true; if(r.contractorName2&&r.contractorName2!=='-'&&(parseFloat(r.contractorPay2)||0)>0&&!_pLog[r.id+'_2']&&!_noc[r.id+'_2']) return true; return false; }); showDrill('Owed to Contractors',owedRows,'contractors'); })()">
         <div class="stat-lbl">Owed to Contractors</div>
         <div class="stat-val">$${Math.round(owedContractors).toLocaleString()}</div>
         <div class="stat-sub">from past events</div>
       </div>
-      <div class="stat-card gold">
+      <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('${monthName} Revenue',${JSON.stringify(thisMonthRows.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
         <div class="stat-lbl">${monthName} Revenue</div>
         <div class="stat-val">$${Math.round(thisMonthRev).toLocaleString()}</div>
         <div class="stat-sub" style="color:${momChange===null?'var(--muted2)':momChange>=0?'var(--green)':'var(--red)'}">
           ${momChange===null?'vs —':momChange>=0?`▲ ${Math.abs(Math.round(momChange))}% vs ${lastMonthName}`:`▼ ${Math.abs(Math.round(momChange))}% vs ${lastMonthName}`}
         </div>
       </div>
-      <div class="stat-card" style="background:var(--s2)">
+      <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="showDrill('${thisYear} Gross Revenue — All Events',${JSON.stringify(ytdRows.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
         <div class="stat-lbl">${thisYear} Gross YTD</div>
         <div class="stat-val" style="color:var(--cream)">$${(ytdGross/1000).toFixed(1)}k</div>
         <div class="stat-sub" style="color:${ytdGross>=(FIN.revenueGoal*(thisMonth+1)/12)?'var(--green)':'var(--red)'}">
@@ -2080,6 +2088,75 @@ function openDetail(id) {
   document.getElementById('detailOverlay').classList.add('open');
 }
 
+// ── DRILL-DOWN MODAL ──────────────────────────────────────────────
+function showDrill(title, rows, type) {
+  document.getElementById('drillTitle').innerHTML = title + ' <button class="panel-close" onclick="closeDrill()">✕</button>';
+  const body = document.getElementById('drillBody');
+  if (!rows || !rows.length) { body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">No data found.</div>'; document.getElementById('drillModal').classList.add('open'); return; }
+
+  const thS = 'style="padding:8px 12px;text-align:left;font-size:10px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)"';
+  const tdS = (extra='') => `style="padding:10px 12px;font-size:12px${extra}"`;
+
+  let html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">';
+
+  if (type === 'events') {
+    html += `<thead><tr style="background:var(--s1)"><th ${thS}>Date</th><th ${thS}>Client</th><th ${thS}>Type</th><th ${thS}>Amount</th><th ${thS}>Status</th></tr></thead><tbody>`;
+    rows.forEach(r => {
+      const paid = r.paid || (!r.balanceDue && r.grossAmount > 0);
+      html += `<tr>
+        <td ${tdS(';color:var(--muted)')}>${r.date||r.eventDate||'—'}</td>
+        <td ${tdS(';font-weight:500')}>${r.client||'—'}</td>
+        <td ${tdS(';color:var(--muted)')}>${r.eventType||'—'}</td>
+        <td ${tdS(';font-weight:600')}>$${Math.round(r.grossAmount||0).toLocaleString()}</td>
+        <td ${tdS()}}><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:${paid?'var(--greenbg)':'var(--amberbg)'};color:${paid?'var(--green)':'var(--amber)'}">${paid?'Paid':'Balance due'}</span></td>
+      </tr>`;
+    });
+  } else if (type === 'invoices') {
+    html += `<thead><tr style="background:var(--s1)"><th ${thS}>Date</th><th ${thS}>Client</th><th ${thS}>Type</th><th ${thS}>Balance Due</th><th ${thS}>Contract</th></tr></thead><tbody>`;
+    rows.forEach(r => {
+      html += `<tr>
+        <td ${tdS(';color:var(--muted)')}>${r.date||r.eventDate||'—'}</td>
+        <td ${tdS(';font-weight:500')}>${r.client||'—'}</td>
+        <td ${tdS(';color:var(--muted)')}>${r.eventType||'—'}</td>
+        <td ${tdS(';color:var(--amber);font-weight:600')}>$${Math.round(r.balanceDue||0).toLocaleString()}</td>
+        <td ${tdS()}>$${Math.round(r.grossAmount||0).toLocaleString()}</td>
+      </tr>`;
+    });
+  } else if (type === 'contractors') {
+    html += `<thead><tr style="background:var(--s1)"><th ${thS}>Date</th><th ${thS}>Client</th><th ${thS}>Contractor</th><th ${thS}>Owed</th></tr></thead><tbody>`;
+    rows.forEach(r => {
+      const owed = (parseFloat(r.contractorPay)||0) + (parseFloat(r.contractorPay2)||0);
+      html += `<tr>
+        <td ${tdS(';color:var(--muted)')}>${r.date||r.eventDate||'—'}</td>
+        <td ${tdS(';font-weight:500')}>${r.client||'—'}</td>
+        <td ${tdS()}>${[r.contractorName,r.contractorName2].filter(Boolean).join(', ')||'—'}</td>
+        <td ${tdS(';color:var(--amber);font-weight:600')}>$${Math.round(owed).toLocaleString()}</td>
+      </tr>`;
+    });
+  } else if (type === 'inquiries') {
+    html += `<thead><tr style="background:var(--s1)"><th ${thS}>Client</th><th ${thS}>Date</th><th ${thS}>Type</th><th ${thS}>Budget</th><th ${thS}>Stage</th></tr></thead><tbody>`;
+    rows.forEach(r => {
+      html += `<tr>
+        <td ${tdS(';font-weight:500')}>${r.name||'—'}</td>
+        <td ${tdS(';color:var(--muted)')}>${r.eventDate||'TBD'}</td>
+        <td ${tdS(';color:var(--muted)')}>${r.eventType||'—'}</td>
+        <td ${tdS()}>$${r.budget||'—'}</td>
+        <td ${tdS()}}><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:var(--amberbg);color:var(--amber)">${r.stage||'—'}</span></td>
+      </tr>`;
+    });
+  }
+
+  html += '</tbody></table></div>';
+  html += `<div style="margin-top:12px;font-size:11px;color:var(--muted);text-align:right">${rows.length} record${rows.length!==1?'s':''}</div>`;
+  body.innerHTML = html;
+  document.getElementById('drillModal').classList.add('open');
+}
+
+function closeDrill() {
+  document.getElementById('drillModal').classList.remove('open');
+}
+
+
 function closeDetail(e) {
   if (e && e.target !== document.getElementById('detailOverlay')) return;
   document.getElementById('detailOverlay').classList.remove('open');
@@ -2401,8 +2478,12 @@ function renderFinancials() {
   const isSMM = r => (r.client||'').toLowerCase().includes('spilled milk');
   const smmRows    = allRows.filter(isSMM);
   const smmYear    = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
-  const smmAllGross = smmRows.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
-  const smmGross   = smmYear.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
+  // For stat card: show current year if has data, otherwise trailing 12 months
+  const twelveMonthsAgo = new Date(); twelveMonthsAgo.setFullYear(twelveMonthsAgo.getFullYear()-1);
+  const smmT12     = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d) >= twelveMonthsAgo; });
+  const smmDisplay = smmYear.length > 0 ? smmYear : smmT12;
+  const smmGross   = smmDisplay.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
+  const smmLabel   = smmYear.length > 0 ? String(thisYear) : 'Last 12 mo';
 
   const yearRows   = allRows.filter(r => { const d = r.date||r.eventDate||''; return d && new Date(d).getFullYear() === thisYear; });
   const sortedYear = [...yearRows].sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
@@ -2482,27 +2563,27 @@ function renderFinancials() {
 
   <!-- TOP STATS -->
   <div class="stats-row" style="margin-bottom:8px">
-    <div class="stat-card gold">
+    <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('${thisYear} Gross Revenue — All Events',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
       <div class="stat-lbl">${thisYear} Gross Revenue</div>
       <div class="stat-val">$${(grossRev/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:${onTrack?'var(--green)':'var(--red)'};margin-top:4px">${onTrack?'✓ On pace':'⚠ Behind pace'} · ${eventCount} events</div>
     </div>
-    <div class="stat-card amber">
+    <div class="stat-card amber" style="cursor:pointer" onclick="showDrill('${thisYear} Contractor Costs',${JSON.stringify(sortedYear.filter(r=>(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0)>0).map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid,contractorName:r.contractorName,contractorName2:r.contractorName2,contractorPay:r.contractorPay,contractorPay2:r.contractorPay2})))}, 'contractors')">
       <div class="stat-lbl">Contractor Costs</div>
       <div class="stat-val">$${(contrCost/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">${grossRev>0?Math.round(contrCost/grossRev*100):0}% of gross · $${Math.round(expTotal).toLocaleString()} expenses</div>
     </div>
-    <div class="stat-card" style="background:var(--s2)">
+    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="showDrill('${thisYear} Net Revenue — All Events',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
       <div class="stat-lbl">Net Revenue</div>
       <div class="stat-val" style="color:var(--cream)">$${(netRev/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">After contractors & expenses</div>
     </div>
-    <div class="stat-card" style="background:var(--redbg);border-color:var(--redborder)">
+    <div class="stat-card" style="background:var(--redbg);border-color:var(--redborder);cursor:pointer" onclick="showDrill('${thisYear} Tax Set-Aside Breakdown',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
       <div class="stat-lbl" style="color:var(--red)">Tax Set Aside (~${Math.round(FIN.taxRate*100)}%)</div>
       <div class="stat-val" style="color:var(--red)">$${(taxAside/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">~$${Math.round(taxAside/4/100)*100}/quarter</div>
     </div>
-    <div class="stat-card green">
+    <div class="stat-card green" style="cursor:pointer" onclick="showDrill('${thisYear} Take-Home Estimate — All Events',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
       <div class="stat-lbl">Take-Home (Est.)</div>
       <div class="stat-val">$${(postTax/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:${postTax>=FIN.ownSalaryGoal?'var(--green)':'var(--red)'};margin-top:4px">${postTax>=FIN.ownSalaryGoal?'✓ Meets goal':'⚠ Below goal'} of $${(FIN.ownSalaryGoal/1000).toFixed(0)}k</div>
@@ -2510,7 +2591,7 @@ function renderFinancials() {
     <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._finTab='smm';renderFinancials()">
       <div class="stat-lbl" style="color:var(--gold)">📱 SMM (Spilled Milk)</div>
       <div class="stat-val" style="color:var(--gold)">$${(smmGross/1000).toFixed(1)}k</div>
-      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${thisYear} · ${smmYear.length} invoice${smmYear.length!==1?'s':''} · tap to view</div>
+      <div style="font-size:10px;color:var(--muted2);margin-top:4px">${smmLabel} · ${smmDisplay.length} invoice${smmDisplay.length!==1?'s':''} · tap to view</div>
     </div>
   </div>
 
@@ -5089,22 +5170,22 @@ function renderEvents() {
 
   <!-- STATS -->
   <div class="stats-row" style="margin-bottom:16px">
-    <div class="stat-card gold">
+    <div class="stat-card gold" style="cursor:pointer" onclick="evtFilter='upcoming';renderEvents()">
       <div class="stat-lbl">Upcoming Events</div>
       <div class="stat-val">${upcoming.length}</div>
       <div class="stat-sub">booked & confirmed</div>
     </div>
-    <div class="stat-card" style="background:var(--s2)">
+    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="showDrill('Pipeline Revenue — Upcoming Events',${JSON.stringify(upcoming.map(e=>({name:e.client,eventDate:e.eventDate||e.date,eventType:e.eventType,grossAmount:(e.contractValue||e.grossAmount||0)+(e.travelFee||0),balanceDue:e.balance||e.balanceDue||0,paid:false})))}, 'events')">
       <div class="stat-lbl">Pipeline Revenue</div>
       <div class="stat-val" style="color:var(--cream)">$${(totalRevenue/1000).toFixed(1)}k</div>
       <div class="stat-sub">from upcoming events</div>
     </div>
-    <div class="stat-card ${totalOutstanding>0?'amber':'green'}">
+    <div class="stat-card ${totalOutstanding>0?'amber':'green'}" style="cursor:pointer" onclick="showDrill('Still To Collect — Outstanding Balances',${JSON.stringify(events.filter(e=>(e.balance||e.balanceDue||0)>0).map(e=>({name:e.client,eventDate:e.eventDate||e.date,eventType:e.eventType,grossAmount:(e.contractValue||e.grossAmount||0)+(e.travelFee||0),balanceDue:e.balance||e.balanceDue||0,paid:false})))}, 'invoices')">
       <div class="stat-lbl">Still To Collect</div>
       <div class="stat-val">$${Math.round(totalOutstanding).toLocaleString()}</div>
       <div class="stat-sub">outstanding balances</div>
     </div>
-    <div class="stat-card" style="background:var(--s2)">
+    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="evtFilter='all';renderEvents()">
       <div class="stat-lbl">All Time Events</div>
       <div class="stat-val" style="color:var(--cream)">${events.length}</div>
       <div class="stat-sub">in ITM Events</div>
