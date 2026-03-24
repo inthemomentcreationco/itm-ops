@@ -3981,9 +3981,9 @@ function tryCombineImport() {
   const piClient = proj.headers.findIndex(h => h === 'Client Info');
   const piType = proj.headers.findIndex(h => h === 'Project Type');
   const piDate = proj.headers.findIndex(h => h === 'Project Date');
+  const piBookedDate = proj.headers.findIndex(h => h === 'Booked Date');
   const piValue = proj.headers.findIndex(h => h === 'Total Project Value');
   const piPaid = proj.headers.findIndex(h => h === 'Total Paid');
-
   // Only include booked projects with actual value
   const piBooked = proj.headers.findIndex(h => h === 'Booked (yes/no)');
   const projMap = {};
@@ -3999,7 +3999,7 @@ function tryCombineImport() {
     const emailIdx = parts.findIndex(p => p.includes('@'));
     const nameParts = emailIdx > 0 ? parts.slice(0, emailIdx) : parts.slice(0, 2);
     const clientName = nameParts.join(' ');
-    const date = clean(row[piDate]);
+    const date = parseDate(row[piDate]) || parseDate(row[piBookedDate]);
     // Key by name+date to avoid matching wrong Cicely Wedding
     const key = name + '|' + date;
     projMap[key] = {
@@ -4014,6 +4014,7 @@ function tryCombineImport() {
   // Parse Payments report — filter paid, group by project name
   const paName = pay.headers.findIndex(h => h === 'PROJECT_NAME');
   const paDate = pay.headers.findIndex(h => h === 'PROJECT_DATE');
+  const paTxDate = pay.headers.findIndex(h => h === 'TRANSACTION_DATE');
   const paStat = pay.headers.findIndex(h => h === 'PAYMENT_STATUS');
   const paTotal = pay.headers.findIndex(h => h === 'TOTAL_AMOUNT');
   const paNet = pay.headers.findIndex(h => h === 'NET_AMOUNT');
@@ -4021,8 +4022,11 @@ function tryCombineImport() {
   const parseDate = (v) => {
     const s = clean(v);
     if (!s) return '';
+    // Handle "YYYY-MM-DD HH:MM:SS UTC" format from Projects CSV
+    const utcMatch = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (utcMatch) return utcMatch[1];
     const d = new Date(s);
-    return isNaN(d) ? s : d.toISOString().split('T')[0];
+    return isNaN(d) ? '' : d.toISOString().split('T')[0];
   };
 
   const grouped = {};
@@ -4030,10 +4034,14 @@ function tryCombineImport() {
     if (clean(row[paStat]).toLowerCase() !== 'paid') return;
     const name = clean(row[paName]);
     if (!name) return;
-    if (!grouped[name]) grouped[name] = { name, date: parseDate(row[paDate]), totalAmount: 0, netAmount: 0 };
+    const projDate = parseDate(row[paDate]);
+    const txDate = parseDate(row[paTxDate]);
+    if (!grouped[name]) grouped[name] = { name, date: projDate || '', txDate: txDate || '', totalAmount: 0, netAmount: 0 };
     grouped[name].totalAmount += parseFloat(clean(row[paTotal])) || 0;
     grouped[name].netAmount   += parseFloat(clean(row[paNet])) || 0;
-    if (!grouped[name].date && row[paDate]) grouped[name].date = parseDate(row[paDate]);
+    // Keep earliest transaction date as fallback
+    if (!grouped[name].date && projDate) grouped[name].date = projDate;
+    if (txDate && (!grouped[name].txDate || txDate < grouped[name].txDate)) grouped[name].txDate = txDate;
   });
 
   // Combine: match payment groups with project info
@@ -4046,20 +4054,38 @@ function tryCombineImport() {
     // Match project by name+date to avoid wrong matches
     const p = projMap[g.name + '|' + g.date] || projMap[g.name + '|' + (new Date(g.date).toISOString().split('T')[0])] || Object.values(projMap).find(pv => pv.name === g.name) || {};
     const clientName = p.clientName || g.name.replace(/\s+(wedding|birthday|engagement|bridal|corporate|party|event|shower|other|family).*$/i, '').trim();
-    const date = p.date || g.date;
+
+    // Use project date first, then payment report date, then transaction date as last resort
+    const date = p.date || g.date || g.txDate;
+    const dateSource = p.date ? 'project' : g.date ? 'payment' : g.txDate ? 'transaction' : 'none';
+
     const grossAmount = p.totalValue || g.totalAmount;
     const hbFees = Math.round((g.totalAmount - g.netAmount) * 100) / 100;
     const balanceDue = Math.max(0, Math.round((grossAmount - g.totalAmount) * 100) / 100);
     const isPaid = balanceDue === 0;
 
-    // Match existing row by client name + date
-    const existing = existingHist.find(r => {
+    // Match existing row — try client+date first, then just client name for no-date entries
+    let existing = existingHist.find(r => {
+      if (!date || !r.date) return false;
       if (r.date !== date) return false;
       const rc = (r.client||'').toLowerCase();
       const gc = clientName.toLowerCase();
       return rc === gc || gc.includes(rc) || rc.includes(gc);
     });
+
+    // Fallback: match by amount + client name if date is missing
+    if (!existing && !date) {
+      existing = existingHist.find(r => {
+        const rc = (r.client||'').toLowerCase();
+        const gc = clientName.toLowerCase();
+        const nameMatch = rc === gc || gc.includes(rc) || rc.includes(gc);
+        const amtMatch = Math.abs((r.grossAmount||0) - grossAmount) < 10;
+        return nameMatch && amtMatch;
+      });
+    }
+
     const id = existing ? existing.id : 'hb_'+(++newIdx);
+    const notes = existing?.notes || (dateSource === 'transaction' ? `[date from payment transaction - verify project date]` : '');
 
     return {
       id, client: clientName, date, eventDate: date,
@@ -4069,15 +4095,18 @@ function tryCombineImport() {
       contractValue: grossAmount,
       eventType:  p.eventType || '',
       source:     'honeybook',
-      notes:      existing?.notes || '',
+      notes,
+      _dateSource: dateSource,
     };
   }).filter(r => r.client);
 
   // Show preview
   const preview = _csvParsed.slice(0, 5);
   const newCount = _csvParsed.filter(r => !existingHist.find(e => e.id === r.id)).length;
+  const txDateCount = _csvParsed.filter(r => r._dateSource === 'transaction').length;
   document.getElementById('csv-preview').innerHTML = `
-    <div style="color:var(--green);margin-bottom:8px">✓ Combined ${_csvParsed.length} events (${newCount} new). Preview:</div>
+    <div style="color:var(--green);margin-bottom:4px">✓ Combined ${_csvParsed.length} events (${newCount} new)${txDateCount>0?` · <span style="color:var(--amber)">⚠ ${txDateCount} used transaction date (no project date set in HoneyBook)</span>`:''}</div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:8px">Preview of first 5:</div>
     <table style="width:100%;font-size:10px;border-collapse:collapse;margin-bottom:10px">
       <tr style="color:var(--muted);font-family:'JetBrains Mono',monospace">
         <th style="text-align:left;padding:3px 6px">ID</th>
@@ -4090,7 +4119,8 @@ function tryCombineImport() {
       ${preview.map(r=>`<tr style="border-top:1px solid var(--border)">
         <td style="padding:3px 6px;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:9px">${r.id}</td>
         <td style="padding:3px 6px;color:var(--cream)">${r.client}</td>
-        <td style="padding:3px 6px;color:var(--muted2)">${r.date||'—'}</td>
+        <td style="padding:3px 6px;color:${r._dateSource==='transaction'?'var(--amber)':'var(--muted2)'}">${r.date||'—'}${r._dateSource==='transaction'?' ⚠':''}
+        </td>
         <td style="padding:3px 6px;color:var(--muted2)">${r.eventType||'—'}</td>
         <td style="padding:3px 6px;color:var(--gold);text-align:right">$${Math.round(r.grossAmount).toLocaleString()}</td>
         <td style="padding:3px 6px;color:${r.balanceDue>0?'var(--amber)':'var(--green)'};text-align:right">$${Math.round(r.balanceDue).toLocaleString()}</td>
