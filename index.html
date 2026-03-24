@@ -3976,6 +3976,16 @@ function tryCombineImport() {
   const proj = parseCSV(_projText);
   const clean = (v) => (v||'').toString().replace(/['"$,]/g,'').trim();
 
+  // Parse date helper — handles "YYYY-MM-DD HH:MM:SS UTC", "Month DD, YYYY", ISO, etc.
+  const parseDate = (v) => {
+    const s = (v||'').toString().trim();
+    if (!s) return '';
+    const utcMatch = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (utcMatch) return utcMatch[1];
+    const d = new Date(s);
+    return isNaN(d) ? '' : d.toISOString().split('T')[0];
+  };
+
   // Parse Projects report — build lookup by Project Name
   const piName = proj.headers.findIndex(h => h === 'Project Name');
   const piClient = proj.headers.findIndex(h => h === 'Client Info');
@@ -4019,14 +4029,8 @@ function tryCombineImport() {
   const paTotal = pay.headers.findIndex(h => h === 'TOTAL_AMOUNT');
   const paNet = pay.headers.findIndex(h => h === 'NET_AMOUNT');
 
-  const parseDate = (v) => {
-    const s = clean(v);
-    if (!s) return '';
     // Handle "YYYY-MM-DD HH:MM:SS UTC" format from Projects CSV
-    const utcMatch = s.match(/^(\d{4}-\d{2}-\d{2})/);
-    if (utcMatch) return utcMatch[1];
     const d = new Date(s);
-    return isNaN(d) ? '' : d.toISOString().split('T')[0];
   };
 
   const grouped = {};
@@ -4178,14 +4182,10 @@ function previewCsv(text) {
   const tfi = headers.findIndex(h => h.trim() === 'TRANSACTION_FEE');
 
   const clean = (v) => (v||'').toString().replace(/['"$,]/g,'').trim();
-  const parseDate = (v) => {
-    const s = clean(v);
-    if (!s) return '';
     // Try "Sep 22, 2023" format
     const d = new Date(s);
     if (!isNaN(d)) return d.toISOString().split('T')[0];
     return s;
-  };
 
   // Filter to paid rows only
   const paidRows = rows.filter(row => clean(row[sti]).toLowerCase() === 'paid');
