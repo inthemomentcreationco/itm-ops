@@ -4113,7 +4113,7 @@ function tryCombineImport() {
   const newCount = _csvParsed.filter(r => !existingHist.find(e => e.id === r.id)).length;
   const txDateCount = _csvParsed.filter(r => r._dateSource === 'transaction').length;
   document.getElementById('csv-preview').innerHTML = `
-    <div style="color:var(--green);margin-bottom:4px">✓ Combined ${_csvParsed.length} events (${newCount} new)${txDateCount>0?` · <span style="color:var(--amber)">⚠ ${txDateCount} used transaction date (no project date set in HoneyBook)</span>`:''}</div>
+    <div style="color:var(--green);margin-bottom:4px">✓ Combined ${_csvParsed.length} events (${newCount} new)${txDateCount>0?' · <span style="color:var(--amber)">⚠ '+txDateCount+' used transaction date (no project date set in HoneyBook)</span>':''}</div>
     <div style="font-size:10px;color:var(--muted);margin-bottom:8px">Preview of first 5:</div>
     <table style="width:100%;font-size:10px;border-collapse:collapse;margin-bottom:10px">
       <tr style="color:var(--muted);font-family:'JetBrains Mono',monospace">
