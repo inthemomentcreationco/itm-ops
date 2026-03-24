@@ -3915,16 +3915,25 @@ function handlePayFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
     _payText = e.target.result;
-    const lines = _payText.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.replace(/['"]/g,'').trim());
+    const lines = _payText.trim().split('\n').filter(l => l.trim());
+    function parseRow(line) {
+      const result = []; let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === '"') { inQ = !inQ; }
+        else if (line[i] === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
+        else { cur += line[i]; }
+      }
+      result.push(cur.trim()); return result;
+    }
+    const headers = parseRow(lines[0]).map(h => h.replace(/['"]/g,'').trim());
     if (!headers.includes('PAYMENT_STATUS')) {
       document.getElementById('pay-status').innerHTML = '⚠ Not a Payments report';
       document.getElementById('pay-drop-zone').style.borderColor = 'var(--red)';
-      _payText = null;
-      return;
+      window._hbPay = null; _payText = null; return;
     }
-    const count = lines.length - 1;
-    document.getElementById('pay-status').innerHTML = '✓ Payments report loaded (' + count + ' rows)';
+    const rows = lines.slice(1).map(l => parseRow(l));
+    window._hbPay = { headers, rows };
+    document.getElementById('pay-status').innerHTML = '✓ Payments report loaded (' + rows.length + ' rows)';
     document.getElementById('pay-drop-zone').style.borderColor = 'var(--green)';
     tryCombineImport();
   };
@@ -3936,31 +3945,30 @@ function handleProjFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
     _projText = e.target.result;
-    const lines = _projText.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.replace(/['"]/g,'').trim());
+    const lines = _projText.trim().split('\n').filter(l => l.trim());
+    function parseRow(line) {
+      const result = []; let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === '"') { inQ = !inQ; }
+        else if (line[i] === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
+        else { cur += line[i]; }
+      }
+      result.push(cur.trim()); return result;
+    }
+    const headers = parseRow(lines[0]).map(h => h.replace(/['"]/g,'').trim());
     if (!headers.includes('Booked (yes/no)') && !headers.includes('Project Name')) {
       document.getElementById('proj-status').innerHTML = '⚠ Not a Projects report';
       document.getElementById('proj-drop-zone').style.borderColor = 'var(--red)';
-      _projText = null;
-      return;
+      window._hbProj = null; _projText = null; return;
     }
-    const count = lines.length - 1;
-    document.getElementById('proj-status').innerHTML = '✓ Projects report loaded (' + count + ' rows)';
+    const rows = lines.slice(1).map(l => parseRow(l));
+    window._hbProj = { headers, rows };
+    document.getElementById('proj-status').innerHTML = '✓ Projects report loaded (' + rows.length + ' rows)';
     document.getElementById('proj-drop-zone').style.borderColor = 'var(--green)';
     tryCombineImport();
   };
   reader.readAsText(file);
 }
-
-function hbParseDate(v) {
-  const s = (v||'').toString().trim();
-  if (!s) return '';
-  const utcMatch = s.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (utcMatch) return utcMatch[1];
-  const d = new Date(s);
-  return isNaN(d) ? '' : d.toISOString().split('T')[0];
-}
-
 
 function hbParseDate(v) {
   const s = (v||'').toString().trim();
