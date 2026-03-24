@@ -4223,25 +4223,25 @@ async function confirmCsvImport() {
   if (!_csvParsed || !_csvParsed.length) { toast('⚠ No data to import'); return; }
   const btn = document.querySelector('#csv-import-actions .btn-gold');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
-  let saved = 0, failed = 0;
-  for (const r of _csvParsed) {
-    try {
-      await apiCall('saveFinancial', {
-        id: r.id, date: r.date||'', client: r.client, eventType: r.eventType||'',
-        grossAmount: r.grossAmount||0, hbFees: r.hbFees||0, travelFee: 0,
-        deposit: r.deposit||0, balanceDue: r.balanceDue||0,
-        paid: r.paid||false, source: 'honeybook', notes: r.notes||''
-      });
-      saved++;
-    } catch(e) { failed++; }
+  try {
+    const records = _csvParsed.map(r => ({
+      id: r.id, date: r.date||'', client: r.client, eventType: r.eventType||'',
+      grossAmount: r.grossAmount||0, hbFees: r.hbFees||0, travelFee: 0,
+      deposit: r.deposit||0, balanceDue: r.balanceDue||0,
+      paid: r.paid||false, source: 'honeybook', notes: r.notes||''
+    }));
+    const result = await apiCall('saveFinancialsBatch', records);
+    document.getElementById('csv-import-actions').style.display = 'none';
+    document.getElementById('csv-preview').innerHTML = '';
+    _csvParsed = [];
+    window._hbPay = null; window._hbProj = null;
+    toast(`✓ Imported ${result.saved || records.length} records`);
+    await syncData();
+    renderFinancials();
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Confirm Import'; }
+    toast('⚠ Import failed: ' + e.message);
   }
-  document.getElementById('csv-import-actions').style.display = 'none';
-  document.getElementById('csv-preview').innerHTML = '';
-  _csvParsed = [];
-  window._hbPay = null; window._hbProj = null;
-  toast(`✓ Imported ${saved} records${failed>0?' · '+failed+' failed':''}`);
-  await syncData();
-  renderFinancials();
 }
 
 function cancelCsvImport() {
