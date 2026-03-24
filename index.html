@@ -4033,9 +4033,6 @@ function tryCombineImport() {
   const paTotal = pay.headers.findIndex(h => h === 'TOTAL_AMOUNT');
   const paNet = pay.headers.findIndex(h => h === 'NET_AMOUNT');
 
-    // Handle "YYYY-MM-DD HH:MM:SS UTC" format from Projects CSV
-    const d = new Date(s);
-  };
 
   const grouped = {};
   pay.rows.forEach(row => {
