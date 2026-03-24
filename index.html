@@ -2968,7 +2968,10 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
             <td style="color:${hasDeposit?'var(--green)':'var(--muted)'}">$${(r.deposit||0).toLocaleString()}</td>
             <td style="color:${isPaid?'var(--green)':'var(--amber)'}">$${Math.round(r.balanceDue||0).toLocaleString()}</td>
             <td style="color:${statusColor};font-weight:600;font-size:11px">${status}</td>
-            <td><button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button></td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
+              <button class="btn btn-outline" style="font-size:10px;padding:3px 8px;margin-left:4px" onclick="openDeliverableModal('${r.id}','${(r.client||'').replace(/'/g,"\\'")}')">📋</button>
+            </td>
           </tr>`;
         }).join('') : `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">No ${thisYear} events — sync to pull from sheet</td></tr>`}
       </tbody>
@@ -3300,9 +3303,8 @@ function openSMEventModal(rowJson) {
   const existing = document.getElementById('sm-event-modal');
   if (existing) existing.remove();
 
-  const contractors = ['Lauren Nava','Bianca Young','Lilly Economus','Roshni Lewis'];
-  const cOpts = contractors.map(c => `<option value="${c}" ${row?.contractorName===c?'selected':''}>${c}</option>`).join('');
-  const c2Opts = '<option value="">None</option>' + contractors.map(c => `<option value="${c}" ${row?.contractorName2===c?'selected':''}>${c}</option>`).join('');
+  const contractorSuggestions = ['Lauren Nava','Bianca Young','Lilly Economus','Roshni Lewis','Jess Nguyen','Lindsay Bell','Steph Jaee','Giulianna'];
+  const datalist = `<datalist id="sm-contractors-list">${contractorSuggestions.map(c=>`<option value="${c}">`).join('')}</datalist>`;
 
   const modal = document.createElement('div');
   modal.id = 'sm-event-modal';
@@ -3324,14 +3326,15 @@ function openSMEventModal(rowJson) {
           ${['Corporate Event','Wedding','Birthday Party','Other'].map(t=>`<option value="${t}" ${row?.eventType===t?'selected':''}>${t}</option>`).join('')}
         </select>
       </div>
+      ${datalist}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
         <div class="field">
           <label class="field-lbl">Contractor 1</label>
-          <select class="field-input" id="sm-c1">${cOpts}</select>
+          <input class="field-input" id="sm-c1" list="sm-contractors-list" placeholder="Type name..." value="${row?.contractorName||''}">
         </div>
         <div class="field">
           <label class="field-lbl">Contractor 2 (optional)</label>
-          <select class="field-input" id="sm-c2">${c2Opts}</select>
+          <input class="field-input" id="sm-c2" list="sm-contractors-list" placeholder="Type name..." value="${row?.contractorName2||''}">
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
@@ -4340,6 +4343,133 @@ async function saveExpenseFromModal(id) {
     renderDashboard();
   } catch(e) { toast('Error: ' + e.message); }
 }
+
+// ════════════════════════════════ DELIVERABLES ════════════════════════════════
+
+function openDeliverableModal(eventId, clientName) {
+  const existing = document.getElementById('deliverable-modal-overlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'deliverable-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  overlay.innerHTML = `
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:24px;width:480px;max-width:100%;max-height:85vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <div style="font-family:'Cormorant',serif;font-size:22px;color:var(--cream)">Deliverables</div>
+          <div style="font-size:11px;color:var(--muted2)">${clientName}</div>
+        </div>
+        <button onclick="document.getElementById('deliverable-modal-overlay').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">✕</button>
+      </div>
+      <div id="del-modal-body-${eventId}">
+        <div style="color:var(--muted);font-size:12px">Loading...</div>
+      </div>
+      <button class="btn btn-gold" style="margin-top:16px;width:100%" onclick="showDeliverableForm('${eventId}','modal')">+ Add Deliverable</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
+  loadDeliverables(eventId, 'modal');
+}
+
+function renderDeliverables(eventId, rows, ctx) {
+  const elId = ctx === 'modal' ? 'del-modal-body-' + eventId : 'deliverables-' + eventId;
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No deliverables yet.</div>';
+    return;
+  }
+  const done = rows.filter(r => r.delivered===true||r.delivered==='true'||r.delivered==='TRUE').length;
+  el.innerHTML =
+    '<div style="font-size:11px;color:' + (done===rows.length?'var(--green)':'var(--amber)') + ';margin-bottom:8px">' + done + '/' + rows.length + ' delivered</div>' +
+    rows.map(r => {
+      const isDone = r.delivered===true||r.delivered==='true'||r.delivered==='TRUE';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">' +
+        '<input type="checkbox" ' + (isDone?'checked':'') + ' onchange="toggleDeliverable('' + r.id + '','' + eventId + '',this.checked,'' + (ctx||'') + '')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--gold)">' +
+        '<div style="flex:1"><div style="font-size:12px;color:var(--cream)">' + (r.label||'Reel') + (r.quantity>1?' x'+r.quantity:'') + '</div>' +
+        (r.notes?'<div style="font-size:11px;color:var(--muted2)">'+r.notes+'</div>':'') + '</div>' +
+        '<button onclick="deleteDeliverableRow('' + r.id + '','' + eventId + '','' + (ctx||'') + '')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 4px">✕</button>' +
+        '</div>';
+    }).join('');
+}
+
+async function loadDeliverables(eventId, ctx) {
+  const cache = JSON.parse(localStorage.getItem('itm_deliverables')||'{}');
+  if (cache[eventId]) renderDeliverables(eventId, cache[eventId], ctx);
+  try {
+    const rows = await apiCall('getDeliverables', { eventId });
+    cache[eventId] = rows||[];
+    localStorage.setItem('itm_deliverables', JSON.stringify(cache));
+    renderDeliverables(eventId, rows||[], ctx);
+  } catch(e) {
+    renderDeliverables(eventId, cache[eventId]||[], ctx);
+  }
+}
+
+function addDeliverable(eventId) { showDeliverableForm(eventId, 'inline'); }
+function addDeliverableInModal(eventId) { showDeliverableForm(eventId, 'modal'); }
+
+function showDeliverableForm(eventId, ctx) {
+  document.getElementById('add-del-form')?.remove();
+  const anchorId = ctx === 'modal' ? 'del-modal-body-' + eventId : 'deliverables-' + eventId;
+  const anchor = document.getElementById(anchorId);
+  if (!anchor) return;
+  const form = document.createElement('div');
+  form.id = 'add-del-form';
+  form.style.cssText = 'background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px';
+  form.innerHTML =
+    '<div style="display:grid;grid-template-columns:1fr 80px;gap:8px;margin-bottom:8px">' +
+      '<div><label style="font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace;text-transform:uppercase;display:block;margin-bottom:4px">Type</label>' +
+      '<select id="del-label" class="field-input" style="font-size:12px;padding:6px 8px"><option>Reel</option><option>Video</option><option>Photo Gallery</option><option>Story Highlight</option><option>Other</option></select></div>' +
+      '<div><label style="font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace;text-transform:uppercase;display:block;margin-bottom:4px">Qty</label>' +
+      '<input id="del-qty" type="number" min="1" value="1" class="field-input" style="font-size:12px;padding:6px 8px"></div></div>' +
+    '<div style="margin-bottom:8px"><label style="font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace;text-transform:uppercase;display:block;margin-bottom:4px">Notes (optional)</label>' +
+    '<input id="del-notes" type="text" placeholder="e.g. sent to client, posted..." class="field-input" style="font-size:12px;padding:6px 8px"></div>' +
+    '<div style="display:flex;gap:8px">' +
+      '<button class="btn btn-gold" style="font-size:11px;padding:4px 12px" onclick="saveDeliverableRow('' + eventId + '','' + ctx + '')">Save</button>' +
+      '<button class="btn btn-outline" style="font-size:11px;padding:4px 12px" onclick="document.getElementById('add-del-form').remove()">Cancel</button>' +
+    '</div>';
+  anchor.after(form);
+}
+
+async function saveDeliverableRow(eventId, ctx) {
+  const label = document.getElementById('del-label')?.value||'Reel';
+  const qty   = parseInt(document.getElementById('del-qty')?.value)||1;
+  const notes = document.getElementById('del-notes')?.value||'';
+  const id    = 'del_' + Date.now();
+  try {
+    await apiCall('saveDeliverable', { id, eventId, label, quantity: qty, delivered: false, notes });
+    document.getElementById('add-del-form')?.remove();
+    const cache = JSON.parse(localStorage.getItem('itm_deliverables')||'{}');
+    if (!cache[eventId]) cache[eventId] = [];
+    cache[eventId].push({ id, eventId, label, quantity: qty, delivered: false, notes });
+    localStorage.setItem('itm_deliverables', JSON.stringify(cache));
+    renderDeliverables(eventId, cache[eventId], ctx);
+    toast('Deliverable added');
+  } catch(e) { toast('Save failed: ' + e.message); }
+}
+
+async function toggleDeliverable(id, eventId, checked, ctx) {
+  const cache = JSON.parse(localStorage.getItem('itm_deliverables')||'{}');
+  const row = (cache[eventId]||[]).find(r => r.id === id);
+  if (!row) return;
+  row.delivered = checked;
+  localStorage.setItem('itm_deliverables', JSON.stringify(cache));
+  renderDeliverables(eventId, cache[eventId], ctx);
+  try { await apiCall('saveDeliverable', {...row, delivered: checked}); }
+  catch(e) { toast('Save failed'); }
+}
+
+async function deleteDeliverableRow(id, eventId, ctx) {
+  if (!confirm('Remove this deliverable?')) return;
+  const cache = JSON.parse(localStorage.getItem('itm_deliverables')||'{}');
+  cache[eventId] = (cache[eventId]||[]).filter(r => r.id !== id);
+  localStorage.setItem('itm_deliverables', JSON.stringify(cache));
+  renderDeliverables(eventId, cache[eventId], ctx);
+  try { await apiCall('deleteDeliverable', { id }); }
+  catch(e) { toast('Delete failed'); }
+}
+
 
 function openAssignModal(eventId) {
   const ev = DATA.events.find(e=>e.id===eventId);
@@ -5405,12 +5535,22 @@ function openEventDetail(eventId) {
 
       ${e.notes && e.notes !== 'Imported from HoneyBook' ? `
       <div style="margin-top:16px;padding:12px;background:var(--s1);border-radius:8px;font-size:12px;color:var(--muted2);font-style:italic">${e.notes}</div>` : ''}
+
+      <!-- DELIVERABLES -->
+      <div style="margin-top:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em">Deliverables</div>
+          <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="addDeliverable('${e.id}')">+ Add</button>
+        </div>
+        <div id="deliverables-${e.id}">
+          <div style="color:var(--muted);font-size:12px;padding:8px 0">Loading...</div>
+        </div>
+      </div>
     </div>`;
   document.body.appendChild(overlay);
   overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
+  loadDeliverables(e.id);
 }
-
-function openNewEventModal() {
   const overlay = document.createElement('div');
   overlay.id = 'new-event-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
