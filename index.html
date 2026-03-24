@@ -2475,7 +2475,7 @@ function renderFinancials() {
   const allRows    = [...liveRows, ...hbRows];
 
   // ── SMM (SPILLED MILK) — visibility only, still in totals ──
-  const isSMM = r => (r.client||'').toLowerCase().includes('spilled milk');
+  const isSMM = r => (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
   const smmRows    = allRows.filter(isSMM);
   const smmYear    = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
   // For stat card: show current year if has data, otherwise trailing 12 months
@@ -2771,7 +2771,7 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
           (hasOwed ? '<span style="font-size:11px;color:var(--amber);font-weight:600">⚠ $' + Math.round(owedAmt).toLocaleString() + ' owed</span>' : '<span style="font-size:11px;color:var(--green)">✓ All paid</span>') +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:10px">' +
-          (hasOwed ? '<button class="btn btn-gold" style="font-size:10px;padding:3px 10px" onclick="event.stopPropagation();openMarkAllPaid(\'' + name.replace(/'/g,"\\'") + '\',[' + events.filter(e=>!e.paid&&!e.noCharge&&e.pay>0).map(e=>'\''+e.key+'\'').join(',') + '],' + Math.round(owedAmt) + ')">Mark All Paid</button>' : '') +
+          (hasOwed ? '<button class=\"btn btn-gold\" style=\"font-size:10px;padding:3px 10px\" onclick=\"event.stopPropagation();(window._mapk=window._mapk||{});window._mapk[\\'' + toggleId + '\\']=' + JSON.stringify(events.filter(e=>!e.paid&&!e.noCharge&&e.pay>0).map(e=>e.key)) + ';openMarkAllPaid(' + JSON.stringify(name) + ',window._mapk[\\'' + toggleId + '\\'],' + Math.round(owedAmt) + ')\">Mark All Paid</button>' : '') +
           '<div style="text-align:right">' +
             '<span style="font-size:11px;color:var(--green)">$' + Math.round(paidAmt).toLocaleString() + ' paid</span>' +
             (owedAmt > 0 ? '<span style="font-size:11px;color:var(--amber);margin-left:10px">$' + Math.round(owedAmt).toLocaleString() + ' due</span>' : '') +
@@ -2851,6 +2851,7 @@ function markSelectedPaid(toggleId, name) {
 }
 
 function openMarkAllPaid(name, keys, totalAmt) {
+  window._pendingMarkPaidKeys = keys;
   const existing = document.getElementById('contractor-paid-modal');
   if (existing) existing.remove();
 
@@ -2877,14 +2878,16 @@ function openMarkAllPaid(name, keys, totalAmt) {
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('contractor-paid-modal').remove()">Cancel</button>
-        <button class="btn btn-gold" onclick="confirmAllContractorPaid(${JSON.stringify(keys)})">✓ Mark All ${keys.length} Paid</button>
+        <button class="btn btn-gold" onclick="confirmAllContractorPaid()">✓ Mark All ${keys.length} Paid</button>
       </div>
     </div>
   `;
   document.body.appendChild(modal);
 }
 
-function confirmAllContractorPaid(keys) {
+function confirmAllContractorPaid() {
+  const keys = window._pendingMarkPaidKeys || [];
+  if (!keys.length) { toast('⚠ No events to mark'); return; }
   const method = document.getElementById('cp-method').value;
   const date   = document.getElementById('cp-date').value;
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
@@ -2958,7 +2961,7 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
           const status = isPaid ? 'Fully Paid' : hasDeposit ? `$${Math.round(r.balanceDue||0).toLocaleString()} due` : 'No deposit';
           const statusColor = isPaid ? 'var(--green)' : hasDeposit ? 'var(--amber)' : 'var(--red)';
           return `<tr>
-            <td style="font-weight:600;color:var(--cream)">${r.client}</td>
+            <td style="font-weight:600;color:var(--cream)">${r.client}${(r.source==='spilled_milk'||(r.id||'').startsWith('sm_'))?'<span style="font-size:9px;margin-left:6px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold);vertical-align:middle">📱 SM</span>':''}</td>
             <td style="font-size:11px">${d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—'}</td>
             <td style="font-size:11px;color:var(--muted2)">${r.eventType||'—'}</td>
             <td>$${(r.grossAmount||0).toLocaleString()}</td>
@@ -3210,9 +3213,12 @@ function renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, 
 }
 
 function renderFinSMM(smmRows, thisYear) {
-  if (!smmRows.length) return `<div style="text-align:center;padding:40px;color:var(--muted)">No Spilled Milk entries found.</div>`;
+  // Split: HB consolidated invoices vs manually logged individual events
+  const smmInvoices = smmRows.filter(r => (r.source||'').toLowerCase() !== 'spilled_milk');
+  const smmEvents   = smmRows.filter(r => (r.source||'').toLowerCase() === 'spilled_milk');
 
-  const sorted = [...smmRows].filter(r => r.date||r.eventDate).sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
+  const sorted = [...smmInvoices].filter(r => r.date||r.eventDate).sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
+  const evSorted = [...smmEvents].filter(r => r.date||r.eventDate).sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
 
   const totalGross = sorted.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
   const totalContr = sorted.reduce((s,r) => s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0), 0);
@@ -3276,8 +3282,118 @@ function renderFinSMM(smmRows, thisYear) {
     <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px">
       <table style="width:100%;border-collapse:collapse">${thead}<tbody>${yRows.map(rowHtml).join('')}</tbody></table>
     </div>`;
-  }).join('')}`;
+  }).join('')}
+
+  <!-- INDIVIDUAL SM EVENTS -->
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;margin-top:8px">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Individual Events (${evSorted.length})</div>
+    <button class="btn btn-gold" style="font-size:11px;padding:6px 14px" onclick="openSMEventModal()">+ Add SM Event</button>
+  </div>
+  ${evSorted.length === 0 ? '<div style="text-align:center;padding:24px;color:var(--muted);font-size:12px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r)">No individual events logged yet. Use the button above to add each Spilled Milk event after it happens.</div>' : '<div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--s1)"><th ' + thStyle + '>Date</th><th ' + thStyle + '>Event / Venue</th><th ' + thStyle + '>Contractor</th><th ' + thStyle + '>Hours</th><th ' + thStyle + '>Pay</th><th ' + thStyle + '>Actions</th></tr></thead><tbody>' + evSorted.map(r => { const pay = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0); return '<tr><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.date||r.eventDate||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;font-weight:500">' + (r.notes||r.client||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px">' + ([r.contractorName,r.contractorName2].filter(x=>x&&x!=='-').join(', ')||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.contractorHours||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:' + (pay>0?'var(--amber)':'var(--muted)') + ';font-weight:600">' + (pay>0?'$'+Math.round(pay).toLocaleString():'\u2014') + '</td><td style="padding:10px 12px"><button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openSMEventModal(' + JSON.stringify(JSON.stringify(r)) + ')">Edit</button></td></tr>'; }).join('') + '</tbody></table></div>'}
+  `;
 }
+
+// ── SPILLED MILK INDIVIDUAL EVENT MODAL ─────────────────────────
+function openSMEventModal(rowJson) {
+  const row = rowJson ? (typeof rowJson === 'string' ? JSON.parse(rowJson) : rowJson) : null;
+  const isEdit = !!row;
+  const existing = document.getElementById('sm-event-modal');
+  if (existing) existing.remove();
+
+  const contractors = ['Lauren Nava','Bianca Young','Lilly Economus','Roshni Lewis'];
+  const cOpts = contractors.map(c => `<option value="${c}" ${row?.contractorName===c?'selected':''}>${c}</option>`).join('');
+  const c2Opts = '<option value="">None</option>' + contractors.map(c => `<option value="${c}" ${row?.contractorName2===c?'selected':''}>${c}</option>`).join('');
+
+  const modal = document.createElement('div');
+  modal.id = 'sm-event-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = `
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:28px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto">
+      <div style="font-family:'Cormorant',serif;font-size:22px;color:var(--cream);margin-bottom:20px">${isEdit?'Edit':'Add'} Spilled Milk Event</div>
+      <div class="field" style="margin-bottom:12px">
+        <label class="field-lbl">Date</label>
+        <input class="field-input" id="sm-date" type="date" value="${row?.date||row?.eventDate||new Date().toISOString().split('T')[0]}">
+      </div>
+      <div class="field" style="margin-bottom:12px">
+        <label class="field-lbl">Event Name / Venue</label>
+        <input class="field-input" id="sm-venue" type="text" placeholder="e.g. Spy Museum Exhibition Opening" value="${row?.notes||''}">
+      </div>
+      <div class="field" style="margin-bottom:12px">
+        <label class="field-lbl">Event Type</label>
+        <select class="field-input" id="sm-type">
+          ${['Corporate Event','Wedding','Birthday Party','Other'].map(t=>`<option value="${t}" ${row?.eventType===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="field">
+          <label class="field-lbl">Contractor 1</label>
+          <select class="field-input" id="sm-c1">${cOpts}</select>
+        </div>
+        <div class="field">
+          <label class="field-lbl">Contractor 2 (optional)</label>
+          <select class="field-input" id="sm-c2">${c2Opts}</select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="field">
+          <label class="field-lbl">Hours Worked</label>
+          <input class="field-input" id="sm-hours" type="number" placeholder="4" value="${row?.contractorHours||''}">
+        </div>
+        <div class="field">
+          <label class="field-lbl">C1 Pay ($)</label>
+          <input class="field-input" id="sm-pay1" type="number" placeholder="400" value="${row?.contractorPay||''}">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:24px">
+        <label class="field-lbl">C2 Pay ($) (if applicable)</label>
+        <input class="field-input" id="sm-pay2" type="number" placeholder="0" value="${row?.contractorPay2||''}">
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('sm-event-modal').remove()">Cancel</button>
+        <button class="btn btn-gold" onclick="saveSMEvent(${isEdit?JSON.stringify(row?.id):'null'})">✓ ${isEdit?'Save Changes':'Add Event'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveSMEvent(existingId) {
+  const date   = document.getElementById('sm-date').value;
+  const venue  = document.getElementById('sm-venue').value.trim();
+  const type   = document.getElementById('sm-type').value;
+  const c1     = document.getElementById('sm-c1').value;
+  const c2     = document.getElementById('sm-c2').value;
+  const hours  = document.getElementById('sm-hours').value;
+  const pay1   = parseFloat(document.getElementById('sm-pay1').value)||0;
+  const pay2   = parseFloat(document.getElementById('sm-pay2').value)||0;
+
+  if (!date) { toast('⚠ Date required'); return; }
+  if (!venue) { toast('⚠ Event name required'); return; }
+
+  const id = existingId || ('sm_' + Date.now());
+  const payload = {
+    id, date,
+    client: 'Spilled Milk',
+    eventType: type,
+    grossAmount: 0,
+    hbFees: 0, travelFee: 0, deposit: 0, balanceDue: 0, paid: true,
+    contractorName: c1, contractorHours: hours, contractorPay: pay1,
+    contractorName2: c2||'', contractorHours2: '', contractorPay2: pay2,
+    source: 'spilled_milk',
+    notes: venue
+  };
+
+  try {
+    await apiCall('saveFinancial', payload);
+    document.getElementById('sm-event-modal').remove();
+    toast('✓ SM event saved');
+    await syncData();
+    window._finTab = 'smm';
+    renderFinancials();
+  } catch(e) {
+    toast('⚠ Error saving: ' + e.message);
+  }
+}
+
 
 function render1099(allRows, thisYear) {
   const yearRows = allRows.filter(r => {
