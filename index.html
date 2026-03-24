@@ -3952,6 +3952,16 @@ function handleProjFile(file) {
   reader.readAsText(file);
 }
 
+function hbParseDate(v) {
+  const s = (v||'').toString().trim();
+  if (!s) return '';
+  const utcMatch = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (utcMatch) return utcMatch[1];
+  const d = new Date(s);
+  return isNaN(d) ? '' : d.toISOString().split('T')[0];
+}
+
+
 function tryCombineImport() {
   if (!_payText || !_projText) return; // wait for both files
   
@@ -3977,14 +3987,8 @@ function tryCombineImport() {
   const clean = (v) => (v||'').toString().replace(/['"$,]/g,'').trim();
 
   // Parse date helper — handles "YYYY-MM-DD HH:MM:SS UTC", "Month DD, YYYY", ISO, etc.
-  const parseDate = (v) => {
-    const s = (v||'').toString().trim();
-    if (!s) return '';
-    const utcMatch = s.match(/^(\d{4}-\d{2}-\d{2})/);
-    if (utcMatch) return utcMatch[1];
-    const d = new Date(s);
-    return isNaN(d) ? '' : d.toISOString().split('T')[0];
-  };
+  // parseDate replaced by global hbParseDate
+  const parseDate = hbParseDate; //.toString().trim();
 
   // Parse Projects report — build lookup by Project Name
   const piName = proj.headers.findIndex(h => h === 'Project Name');
@@ -4182,10 +4186,6 @@ function previewCsv(text) {
   const tfi = headers.findIndex(h => h.trim() === 'TRANSACTION_FEE');
 
   const clean = (v) => (v||'').toString().replace(/['"$,]/g,'').trim();
-    // Try "Sep 22, 2023" format
-    const d = new Date(s);
-    if (!isNaN(d)) return d.toISOString().split('T')[0];
-    return s;
 
   // Filter to paid rows only
   const paidRows = rows.filter(row => clean(row[sti]).toLowerCase() === 'paid');
@@ -4194,7 +4194,7 @@ function previewCsv(text) {
   const grouped = {};
   paidRows.forEach(row => {
     const client = clean(row[ci]);
-    const date   = parseDate(row[di]);
+    const date   = hbParseDate(row[di]);
     if (!client) return;
     const key = client + '|' + date;
     if (!grouped[key]) grouped[key] = { client, date, totalAmount: 0, netAmount: 0, txFee: 0 };
