@@ -2771,7 +2771,7 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
           (hasOwed ? '<span style="font-size:11px;color:var(--amber);font-weight:600">⚠ $' + Math.round(owedAmt).toLocaleString() + ' owed</span>' : '<span style="font-size:11px;color:var(--green)">✓ All paid</span>') +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:10px">' +
-          (hasOwed ? '<button class=\"btn btn-gold\" style=\"font-size:10px;padding:3px 10px\" onclick=\"event.stopPropagation();(window._mapk=window._mapk||{});window._mapk[\\'' + toggleId + '\\']=' + JSON.stringify(events.filter(e=>!e.paid&&!e.noCharge&&e.pay>0).map(e=>e.key)) + ';openMarkAllPaid(' + JSON.stringify(name) + ',window._mapk[\\'' + toggleId + '\\'],' + Math.round(owedAmt) + ')\">Mark All Paid</button>' : '') +
+          (hasOwed ? '<button class="btn btn-gold" style="font-size:10px;padding:3px 10px" id="mab-' + toggleId + '" onclick="event.stopPropagation();var btn=document.getElementById(\'mab-' + toggleId + '\');openMarkAllPaid(' + JSON.stringify(name) + ',JSON.parse(btn.dataset.keys),' + Math.round(owedAmt) + ')" data-keys=\'' + JSON.stringify(events.filter(e=>!e.paid&&!e.noCharge&&e.pay>0).map(e=>e.key)).replace(/'/g,"&#39;") + '\'>' + 'Mark All Paid</button>' : '') +
           '<div style="text-align:right">' +
             '<span style="font-size:11px;color:var(--green)">$' + Math.round(paidAmt).toLocaleString() + ' paid</span>' +
             (owedAmt > 0 ? '<span style="font-size:11px;color:var(--amber);margin-left:10px">$' + Math.round(owedAmt).toLocaleString() + ' due</span>' : '') +
