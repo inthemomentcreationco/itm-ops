@@ -4223,19 +4223,27 @@ async function confirmCsvImport() {
   if (!_csvParsed || !_csvParsed.length) { toast('⚠ No data to import'); return; }
   const btn = document.querySelector('#csv-import-actions .btn-gold');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+  const records = _csvParsed.map(r => ({
+    id: r.id, date: r.date||'', client: r.client, eventType: r.eventType||'',
+    grossAmount: r.grossAmount||0, hbFees: r.hbFees||0, travelFee: 0,
+    deposit: r.deposit||0, balanceDue: r.balanceDue||0,
+    paid: r.paid||false, source: 'honeybook', notes: r.notes||''
+  }));
+  const chunkSize = 25;
+  let saved = 0, failed = 0;
   try {
-    const records = _csvParsed.map(r => ({
-      id: r.id, date: r.date||'', client: r.client, eventType: r.eventType||'',
-      grossAmount: r.grossAmount||0, hbFees: r.hbFees||0, travelFee: 0,
-      deposit: r.deposit||0, balanceDue: r.balanceDue||0,
-      paid: r.paid||false, source: 'honeybook', notes: r.notes||''
-    }));
-    const result = await apiCall('saveFinancialsBatch', records);
+    for (let i = 0; i < records.length; i += chunkSize) {
+      const chunk = records.slice(i, i + chunkSize);
+      if (btn) btn.textContent = `Saving... ${Math.min(i+chunkSize, records.length)}/${records.length}`;
+      const result = await apiCall('saveFinancialsBatch', chunk);
+      saved += result.saved || chunk.length;
+      failed += result.failed || 0;
+    }
     document.getElementById('csv-import-actions').style.display = 'none';
     document.getElementById('csv-preview').innerHTML = '';
     _csvParsed = [];
     window._hbPay = null; window._hbProj = null;
-    toast(`✓ Imported ${result.saved || records.length} records`);
+    toast(`✓ Imported ${saved} records${failed>0?' · '+failed+' failed':''}`);
     await syncData();
     renderFinancials();
   } catch(e) {
