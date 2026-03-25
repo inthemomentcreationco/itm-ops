@@ -2957,7 +2957,8 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
         ${sortedYear.length ? sortedYear.map(r => {
           const d = r.date||r.eventDate||'';
           const isPaid = r.paid || (r.balanceDue||0)===0;
-          const hasDeposit = (r.deposit||0) > 0;
+          const derivedDeposit = (r.deposit||0) > 0 ? (r.deposit||0) : (isPaid ? (r.grossAmount||0) : ((r.grossAmount||0) - (r.balanceDue||0)));
+          const hasDeposit = derivedDeposit > 0;
           const status = isPaid ? 'Fully Paid' : hasDeposit ? `$${Math.round(r.balanceDue||0).toLocaleString()} due` : 'No deposit';
           const statusColor = isPaid ? 'var(--green)' : hasDeposit ? 'var(--amber)' : 'var(--red)';
           return `<tr>
@@ -2965,7 +2966,7 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
             <td style="font-size:11px">${d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—'}</td>
             <td style="font-size:11px;color:var(--muted2)">${r.eventType||'—'}</td>
             <td>$${(r.grossAmount||0).toLocaleString()}</td>
-            <td style="color:${hasDeposit?'var(--green)':'var(--muted)'}">$${(r.deposit||0).toLocaleString()}</td>
+            <td style="color:${hasDeposit?'var(--green)':'var(--muted)'}">$${Math.round(derivedDeposit).toLocaleString()}</td>
             <td style="color:${isPaid?'var(--green)':'var(--amber)'}">$${Math.round(r.balanceDue||0).toLocaleString()}</td>
             <td style="color:${statusColor};font-weight:600;font-size:11px">${status}</td>
             <td style="white-space:nowrap">
@@ -4510,19 +4511,17 @@ function onPackageChange(eventId, pkg) {
   const allRows = [...(DATA.historicalEvents||[]), ...(DATA.events||[])];
   const row = allRows.find(r => r.id === eventId);
   if (!row) return;
-  // Only auto-init if no deliverables set yet
   let dl = {};
   try { dl = row.deliverables ? JSON.parse(row.deliverables) : {}; } catch(e) { dl = {}; }
-  if (!dl.reels || dl.reels.length === 0) {
-    dl = defaultDeliverables(pkg);
-    row.deliverables = JSON.stringify(dl);
-    row.package = pkg;
-    // Save automatically
-    saveDeliverables(row);
-    toast('Package set — deliverables auto-populated');
-  } else {
-    row.package = pkg;
-  }
+  const reelCount = PACKAGES[pkg] || 0;
+  // Always resize reels to match the new package, preserving existing checked state
+  const existing = dl.reels || [];
+  dl.reels = Array(reelCount).fill(false).map((_, i) => existing[i] || false);
+  if (dl.raws === undefined) dl.raws = false;
+  row.deliverables = JSON.stringify(dl);
+  row.package = pkg;
+  saveDeliverables(row);
+  if (reelCount > 0) toast('Package updated — ' + reelCount + ' reels set');
 }
 
 
@@ -4548,8 +4547,25 @@ async function saveDeliverables(row) {
 
 
 function openAssignModal(eventId) {
-  const ev = DATA.events.find(e=>e.id===eventId);
-  if (!ev) return;
+  let ev = DATA.events.find(e=>e.id===eventId);
+  if (!ev) {
+    // Fall back to historical events — create a minimal event object
+    const hist = (DATA.historicalEvents||[]).find(r=>r.id===eventId);
+    if (!hist) return;
+    ev = {
+      id: hist.id, client: hist.client, eventDate: hist.date,
+      eventType: hist.eventType||'', location: '',
+      contractValue: hist.grossAmount||0, travelFee: hist.travelFee||0,
+      balance: hist.balanceDue||0, deposit: hist.deposit||0,
+      contractorAssignments: [
+        hist.contractorName ? { contractorId: hist.contractorName, contractorName: hist.contractorName, hours: hist.contractorHours||'', pay: hist.contractorPay||0, travelShare: 0, paid: false } : null,
+        hist.contractorName2 ? { contractorId: hist.contractorName2, contractorName: hist.contractorName2, hours: hist.contractorHours2||'', pay: hist.contractorPay2||0, travelShare: 0, paid: false } : null,
+      ].filter(Boolean),
+      notes: hist.notes||''
+    };
+    // Push to DATA.events so saveAssignments can find it
+    DATA.events.push(ev);
+  }
   renderAssignModal(ev);
   document.getElementById('assignModal').classList.add('open');
 }
@@ -4558,6 +4574,7 @@ function closeAssignModal() {
   document.getElementById('assignModal').classList.remove('open');
   renderContractors();
   renderFinancials();
+  renderEvents();
 }
 
 function renderAssignModal(ev) {
@@ -4677,7 +4694,32 @@ async function saveAssignments(eventId) {
         paid:           a.paid || false,
       });
     }
-    toast('Assignments saved to Google Sheet ✓');
+
+    // Also sync contractor fields back to ITM_Financials row
+    const finRow = (DATA.historicalEvents||[]).find(r => r.id === eventId);
+    if (finRow) {
+      const assigns = ev.contractorAssignments || [];
+      const c1 = assigns[0] || {};
+      const c2 = assigns[1] || {};
+      finRow.contractorName  = c1.contractorName || '';
+      finRow.contractorHours = c1.hours || '';
+      finRow.contractorPay   = c1.pay || finRow.contractorPay || 0;
+      finRow.contractorName2  = c2.contractorName || '';
+      finRow.contractorHours2 = c2.hours || '';
+      finRow.contractorPay2   = c2.pay || finRow.contractorPay2 || 0;
+      await apiCall('saveFinancial', {
+        id: finRow.id, date: finRow.date, client: finRow.client,
+        eventType: finRow.eventType||'', grossAmount: finRow.grossAmount||0,
+        hbFees: finRow.hbFees||0, travelFee: finRow.travelFee||0,
+        deposit: finRow.deposit||0, balanceDue: finRow.balanceDue||0,
+        paid: finRow.paid||false, source: finRow.source||'manual',
+        notes: finRow.notes||'', package: finRow.package||'',
+        contractorName: finRow.contractorName, contractorHours: finRow.contractorHours, contractorPay: finRow.contractorPay,
+        contractorName2: finRow.contractorName2, contractorHours2: finRow.contractorHours2, contractorPay2: finRow.contractorPay2,
+      });
+    }
+
+    toast('Assignments saved ✓');
   } catch(e) {
     toast('Warning: could not save assignments. ' + e.message);
   }
@@ -5443,110 +5485,133 @@ function calToday() {
 }
 
 // ════════════════════════════════ EVENTS ════════════════════════════════
-let evtFilter = 'upcoming'; // 'upcoming' | 'all' | 'completed'
+let evtFilter = 'active'; // 'active' | 'completed'
 
 function renderEvents() {
-  const today    = new Date().toISOString().split('T')[0];
-  const events   = (DATA.events || []).map(e => ({...e, eventDate: normalizeDate(e.eventDate)}));
-  const payments = DATA.payments || [];
-  const assignments = DATA.assignments || [];
+  const today = new Date();
+  const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() - 30);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+  const todayStr  = today.toISOString().split('T')[0];
 
-  const upcoming  = events.filter(e => (e.eventDate||'') >= today).sort((a,b) => a.eventDate.localeCompare(b.eventDate));
-  const past      = events.filter(e => (e.eventDate||'') < today).sort((a,b) => b.eventDate.localeCompare(a.eventDate));
-  const completed = events.filter(e => e.status === 'completed' || (e.balance||0) === 0);
+  // Pull from ITM_Financials as source of truth
+  const allFin = (DATA.historicalEvents||[]).filter(r => r.client && r.date);
+  // Also include live events not already in financials
+  const finIds = new Set(allFin.map(r => r.id));
+  const liveOnly = (DATA.events||[]).filter(e => !finIds.has(e.id)).map(e => ({
+    ...e, date: e.eventDate||e.date||'', grossAmount: (e.contractValue||0)+(e.travelFee||0),
+    balanceDue: e.balance||0, paid: (e.balance||0)===0&&(e.deposit||0)>0
+  }));
+  const allEvents = [...allFin, ...liveOnly]
+    .filter(r => r.date)
+    .sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
-  const show = evtFilter === 'upcoming' ? upcoming
-             : evtFilter === 'completed' ? completed
-             : [...upcoming, ...past];
+  // Split active vs completed
+  const active    = allEvents.filter(r => (r.date||'') >= cutoffStr).sort((a,b) => a.date.localeCompare(b.date));
+  const completed = allEvents.filter(r => (r.date||'') < cutoffStr).sort((a,b) => b.date.localeCompare(a.date));
+  const show = evtFilter === 'completed' ? completed : active;
 
-  const totalRevenue  = upcoming.reduce((s,e) => s + (e.contractValue||0) + (e.travelFee||0), 0);
-  const totalOutstanding = upcoming.reduce((s,e) => s + (e.balance||0), 0);
+  // Deliverables cache
+  const dlCache = JSON.parse(localStorage.getItem('itm_deliverables')||'{}');
+
+  function delProgress(r) {
+    let dl = {}; try { dl = r.deliverables ? JSON.parse(r.deliverables) : dlCache[r.id]||{}; } catch(e) { dl = dlCache[r.id]||{}; }
+    const planDone = r.planningCall===true||r.planningCall==='true'||r.planningCall==='TRUE';
+    const rawsDone = dl.raws===true;
+    const reels = dl.reels||[];
+    const reelsDone = reels.filter(Boolean).length;
+    const total = 2 + reels.length; // planning + raws + reels
+    const done  = (planDone?1:0) + (rawsDone?1:0) + reelsDone;
+    return { done, total, hasPkg: !!r.package };
+  }
+
+  const upcoming  = active.filter(r => (r.date||'') >= todayStr);
+  const pipeline  = upcoming.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
+  const outstanding = upcoming.reduce((s,r) => s+(parseFloat(r.balanceDue)||0), 0);
+  const needsDelivery = active.filter(r => { const p=delProgress(r); return r.date<todayStr && p.done<p.total; }).length;
 
   document.getElementById('events-content').innerHTML = `
-
-  <!-- STATS -->
   <div class="stats-row" style="margin-bottom:16px">
-    <div class="stat-card gold" style="cursor:pointer" onclick="evtFilter='upcoming';renderEvents()">
+    <div class="stat-card gold" style="cursor:pointer" onclick="evtFilter='active';renderEvents()">
       <div class="stat-lbl">Upcoming Events</div>
       <div class="stat-val">${upcoming.length}</div>
-      <div class="stat-sub">booked & confirmed</div>
+      <div class="stat-sub">in next 30+ days</div>
     </div>
-    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="showDrill('Pipeline Revenue — Upcoming Events',${JSON.stringify(upcoming.map(e=>({name:e.client,eventDate:e.eventDate||e.date,eventType:e.eventType,grossAmount:(e.contractValue||e.grossAmount||0)+(e.travelFee||0),balanceDue:e.balance||e.balanceDue||0,paid:false})))}, 'events')">
+    <div class="stat-card" style="background:var(--s2)">
       <div class="stat-lbl">Pipeline Revenue</div>
-      <div class="stat-val" style="color:var(--cream)">$${(totalRevenue/1000).toFixed(1)}k</div>
+      <div class="stat-val" style="color:var(--cream)">$${Math.round(pipeline/1000*10)/10}k</div>
       <div class="stat-sub">from upcoming events</div>
     </div>
-    <div class="stat-card ${totalOutstanding>0?'amber':'green'}" style="cursor:pointer" onclick="showDrill('Still To Collect — Outstanding Balances',${JSON.stringify(events.filter(e=>(e.balance||e.balanceDue||0)>0).map(e=>({name:e.client,eventDate:e.eventDate||e.date,eventType:e.eventType,grossAmount:(e.contractValue||e.grossAmount||0)+(e.travelFee||0),balanceDue:e.balance||e.balanceDue||0,paid:false})))}, 'invoices')">
-      <div class="stat-lbl">Still To Collect</div>
-      <div class="stat-val">$${Math.round(totalOutstanding).toLocaleString()}</div>
-      <div class="stat-sub">outstanding balances</div>
+    <div class="stat-card ${needsDelivery>0?'amber':'green'}">
+      <div class="stat-lbl">Deliveries Pending</div>
+      <div class="stat-val">${needsDelivery}</div>
+      <div class="stat-sub">past events incomplete</div>
     </div>
-    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="evtFilter='all';renderEvents()">
-      <div class="stat-lbl">All Time Events</div>
-      <div class="stat-val" style="color:var(--cream)">${events.length}</div>
-      <div class="stat-sub">in ITM Events</div>
+    <div class="stat-card" style="background:var(--s2)">
+      <div class="stat-lbl">Completed Events</div>
+      <div class="stat-val" style="color:var(--cream)">${completed.length}</div>
+      <div class="stat-sub">more than 30 days ago</div>
     </div>
   </div>
 
-  <!-- FILTER TABS -->
   <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
-    ${[
-      { key:'upcoming',  label:`Upcoming (${upcoming.length})` },
-      { key:'completed', label:`Completed (${completed.length})` },
-      { key:'all',       label:`All (${events.length})` },
-    ].map(t=>`<button class="btn ${evtFilter===t.key?'btn-gold':'btn-outline'}" onclick="evtFilter='${t.key}';renderEvents()" style="padding:6px 14px;font-size:11px">${t.label}</button>`).join('')}
+    <button class="btn ${evtFilter!=='completed'?'btn-gold':'btn-outline'}" onclick="evtFilter='active';renderEvents()" style="padding:6px 14px;font-size:11px">Active (${active.length})</button>
+    <button class="btn ${evtFilter==='completed'?'btn-gold':'btn-outline'}" onclick="evtFilter='completed';renderEvents()" style="padding:6px 14px;font-size:11px">Completed (${completed.length})</button>
     <div style="margin-left:auto">
       <button class="btn btn-outline" onclick="openNewEventModal()" style="padding:6px 14px;font-size:11px">+ New Event</button>
     </div>
   </div>
 
-  <!-- EVENTS LIST -->
-  ${show.length === 0 ? `<div class="empty"><div class="empty-icon">📅</div><div class="empty-msg">No events here — run the HoneyBook import from Financials → Import tab to load all your events.</div></div>` : `
+  ${show.length === 0 ? `<div class="empty"><div class="empty-icon">📅</div><div class="empty-msg">${evtFilter==='completed'?'No completed events yet.':'No active events — sync to load from sheet.'}</div></div>` : `
   <div style="display:flex;flex-direction:column;gap:10px">
-    ${show.map(e => {
-      const bal  = e.balance || 0;
-      const dep  = e.deposit || 0;
-      const gross = (e.contractValue||0) + (e.travelFee||0);
-      const isPaid = bal === 0 && dep > 0;
-      const payColor = isPaid ? 'var(--green)' : bal > 0 && dep > 0 ? 'var(--amber)' : bal > 0 ? 'var(--red)' : 'var(--muted)';
-      const payLabel = isPaid ? '✓ Fully Paid' : dep > 0 ? `$${Math.round(bal).toLocaleString()} balance due` : gross > 0 ? 'No deposit yet' : '—';
-      const eventAssigns = assignments.filter(a => a.eventId === e.id);
-      const daysOut = e.eventDate ? Math.round((new Date(e.eventDate+'T12:00:00') - new Date()) / 86400000) : null;
-      const isPast = daysOut !== null && daysOut < 0;
-      return `
-      <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:16px 20px;display:flex;gap:16px;align-items:flex-start;cursor:pointer" onclick="openEventDetail('${e.id}')">
-        <!-- DATE BLOCK -->
+    ${show.map(r => {
+      const date = r.date||'';
+      const isPast = date < todayStr;
+      const daysOut = date ? Math.round((new Date(date+'T12:00:00') - today) / 86400000) : null;
+      const daysLabel = daysOut === null ? '' : daysOut === 0 ? 'Today' : daysOut === 1 ? 'Tomorrow' : daysOut > 0 ? daysOut+'d away' : Math.abs(daysOut)+'d ago';
+      const daysColor = daysOut === 0 ? 'var(--gold)' : daysOut > 0 && daysOut <= 14 ? 'var(--amber)' : 'var(--muted2)';
+      const bal  = parseFloat(r.balanceDue)||0;
+      const gross = parseFloat(r.grossAmount)||0;
+      const derivedDep = (r.deposit||0)>0 ? (r.deposit||0) : (r.paid ? gross : gross - bal);
+      const isPaid = r.paid || bal===0;
+      const payColor = isPaid ? 'var(--green)' : bal>0&&derivedDep>0 ? 'var(--amber)' : 'var(--red)';
+      const payLabel = isPaid ? '✓ Paid' : derivedDep>0 ? '$'+Math.round(bal).toLocaleString()+' due' : 'No deposit';
+      const prog = delProgress(r);
+      const progColor = prog.done===prog.total&&prog.total>2 ? 'var(--green)' : prog.done>0 ? 'var(--amber)' : 'var(--muted)';
+      const c1 = r.contractorName||''; const c2 = r.contractorName2||'';
+      const contractors = [c1,c2].filter(Boolean).join(', ');
+      return `<div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:16px 20px;display:flex;gap:16px;align-items:flex-start">
         <div style="min-width:50px;text-align:center;flex-shrink:0">
-          ${e.eventDate ? `
-          <div style="font-family:'Cormorant',serif;font-size:26px;color:${isPast?'var(--muted)':'var(--gold)'};line-height:1">${new Date(e.eventDate+'T12:00:00').getDate()}</div>
-          <div style="font-size:9px;color:var(--muted);text-transform:uppercase">${new Date(e.eventDate+'T12:00:00').toLocaleDateString('en-US',{month:'short'})}</div>
-          <div style="font-size:9px;color:var(--muted)">${new Date(e.eventDate+'T12:00:00').getFullYear()}</div>
-          ` : '<div style="color:var(--muted);font-size:11px">No date</div>'}
+          ${date ? `<div style="font-family:'Cormorant',serif;font-size:26px;color:${isPast?'var(--muted)':'var(--gold)'};line-height:1">${new Date(date+'T12:00:00').getDate()}</div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase">${new Date(date+'T12:00:00').toLocaleDateString('en-US',{month:'short'})}</div>
+          <div style="font-size:9px;color:var(--muted)">${new Date(date+'T12:00:00').getFullYear()}</div>` : '<div style="color:var(--muted);font-size:11px">No date</div>'}
         </div>
-        <!-- MAIN INFO -->
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-            <div style="font-weight:700;color:var(--cream);font-size:14px">${e.client}</div>
-            <span style="font-size:10px;background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:2px 6px;color:var(--muted2)">${e.eventType||'Event'}</span>
-            ${daysOut !== null ? `<span style="font-size:10px;color:${daysOut===0?'var(--gold)':daysOut>0&&daysOut<=14?'var(--amber)':isPast?'var(--muted)':'var(--muted2)'}">
-              ${daysOut===0?'Today':daysOut===1?'Tomorrow':daysOut>0?daysOut+'d away':Math.abs(daysOut)+'d ago'}
-            </span>` : ''}
+            <div style="font-weight:700;color:var(--cream);font-size:14px">${r.client}</div>
+            <span style="font-size:10px;background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:2px 6px;color:var(--muted2)">${r.eventType||'Event'}</span>
+            ${daysLabel ? `<span style="font-size:10px;color:${daysColor}">${daysLabel}</span>` : ''}
+            ${(r.source==='spilled_milk'||(r.id||'').startsWith('sm_')) ? '<span style="font-size:9px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold)">📱 SM</span>' : ''}
           </div>
-          ${e.location ? `<div style="font-size:11px;color:var(--muted2);margin-bottom:4px">📍 ${e.location}</div>` : ''}
-          ${eventAssigns.length ? `<div style="font-size:11px;color:var(--muted2)">👤 ${eventAssigns.map(a=>a.contractorName||a.contractorId).join(', ')}</div>` : ''}
-          ${e.notes && e.notes !== 'Imported from HoneyBook' ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;font-style:italic">${e.notes}</div>` : ''}
+          <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted2);margin-bottom:6px">
+            ${r.package ? `<span>📦 ${r.package}</span>` : '<span style="color:var(--muted)">No package set</span>'}
+            ${contractors ? `<span>👤 ${contractors}</span>` : '<span style="color:var(--muted)">No contractor assigned</span>'}
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:11px;color:${progColor}">${prog.total>2?prog.done+'/'+prog.total+' delivered':isPast?'Set package to track':'Upcoming'}</span>
+            <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openDeliverableModal('${r.id}','${(r.client||'').replace(/'/g,"\\'")}')">📋 Deliverables</button>
+            <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
+          </div>
         </div>
-        <!-- FINANCIAL INFO -->
         <div style="text-align:right;flex-shrink:0">
           <div style="font-size:16px;font-weight:700;color:var(--gold)">$${Math.round(gross).toLocaleString()}</div>
           <div style="font-size:11px;color:${payColor};margin-top:2px">${payLabel}</div>
-          ${dep > 0 && !isPaid ? `<div style="font-size:10px;color:var(--muted2);margin-top:2px">$${Math.round(dep).toLocaleString()} deposit paid</div>` : ''}
         </div>
       </div>`;
     }).join('')}
   </div>`}
   `;
 }
+
 
 function openEventDetail(eventId) {
   const e = DATA.events.find(ev => ev.id === eventId);
