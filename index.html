@@ -2108,7 +2108,7 @@ function showDrill(title, rows, type) {
         <td ${tdS(';font-weight:500')}>${r.client||'—'}</td>
         <td ${tdS(';color:var(--muted)')}>${r.eventType||'—'}</td>
         <td ${tdS(';font-weight:600')}>$${Math.round(r.grossAmount||0).toLocaleString()}</td>
-        <td ${tdS()}}><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:${paid?'var(--greenbg)':'var(--amberbg)'};color:${paid?'var(--green)':'var(--amber)'}">${paid?'Paid':'Balance due'}</span></td>
+        <td ${tdS()}><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:${paid?'var(--greenbg)':'var(--amberbg)'};color:${paid?'var(--green)':'var(--amber)'}">${paid?'Paid':'Balance due'}</span></td>
       </tr>`;
     });
   } else if (type === 'invoices') {
@@ -2141,7 +2141,7 @@ function showDrill(title, rows, type) {
         <td ${tdS(';color:var(--muted)')}>${r.eventDate||'TBD'}</td>
         <td ${tdS(';color:var(--muted)')}>${r.eventType||'—'}</td>
         <td ${tdS()}>$${r.budget||'—'}</td>
-        <td ${tdS()}}><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:var(--amberbg);color:var(--amber)">${r.stage||'—'}</span></td>
+        <td ${tdS()}><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:var(--amberbg);color:var(--amber)">${r.stage||'—'}</span></td>
       </tr>`;
     });
   }
@@ -5563,6 +5563,7 @@ function openEventDetail(eventId) {
   overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
   loadDeliverables(e.id);
 }
+function openNewEventModal() {
   const overlay = document.createElement('div');
   overlay.id = 'new-event-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
