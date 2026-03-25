@@ -3138,6 +3138,7 @@ async function saveFinEdit(id) {
     hist.balanceDue    = balanceDue;
     hist.paid          = paid;
     hist.grossAmount   = grossAmount;
+    hist.package       = pkg;
     hist.contractorName  = c1name;
     hist.contractorHours = c1hours ? parseFloat(c1hours) : hist.contractorHours;
     hist.contractorPay   = c1pay   ? parseFloat(c1pay)   : hist.contractorPay;
@@ -3153,6 +3154,7 @@ async function saveFinEdit(id) {
     toast('✓ Saved successfully');
     renderFinancials();
     renderDashboard();
+    renderEvents();
   } catch(e) {
     btn.disabled = false;
     btn.textContent = 'Save Changes';
@@ -4507,21 +4509,41 @@ function openDeliverableModal(eventId, clientName) {
   overlay.addEventListener('click', function(ev) { if (ev.target === overlay) overlay.remove(); });
 }
 
-function onPackageChange(eventId, pkg) {
+async function onPackageChange(eventId, pkg) {
   const allRows = [...(DATA.historicalEvents||[]), ...(DATA.events||[])];
   const row = allRows.find(r => r.id === eventId);
   if (!row) return;
   let dl = {};
   try { dl = row.deliverables ? JSON.parse(row.deliverables) : {}; } catch(e) { dl = {}; }
   const reelCount = PACKAGES[pkg] || 0;
-  // Always resize reels to match the new package, preserving existing checked state
   const existing = dl.reels || [];
   dl.reels = Array(reelCount).fill(false).map((_, i) => existing[i] || false);
   if (dl.raws === undefined) dl.raws = false;
   row.deliverables = JSON.stringify(dl);
   row.package = pkg;
-  saveDeliverables(row);
-  if (reelCount > 0) toast('Package updated — ' + reelCount + ' reels set');
+
+  try {
+    // Save deliverables (planningCall + deliverables JSON)
+    await saveDeliverables(row);
+    // Also save package field to ITM_Financials
+    await apiCall('saveFinancial', {
+      id: row.id, date: row.date||'', client: row.client||'',
+      eventType: row.eventType||'', package: pkg,
+      grossAmount: row.grossAmount||0, hbFees: row.hbFees||0,
+      travelFee: row.travelFee||0, deposit: row.deposit||0,
+      balanceDue: row.balanceDue||0, paid: row.paid||false,
+      source: row.source||'manual', notes: row.notes||'',
+      contractorName: row.contractorName||'', contractorHours: row.contractorHours||'',
+      contractorPay: row.contractorPay||0, contractorName2: row.contractorName2||'',
+      contractorHours2: row.contractorHours2||'', contractorPay2: row.contractorPay2||0,
+    });
+    if (reelCount > 0) toast('Package saved — ' + reelCount + ' reels set');
+    else toast('Package saved');
+    // Re-render so the card updates immediately
+    renderEvents();
+  } catch(e) {
+    toast('Save failed: ' + e.message);
+  }
 }
 
 
