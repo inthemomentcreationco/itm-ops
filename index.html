@@ -4379,18 +4379,28 @@ function renderDeliverables(eventId, rows, ctx) {
     el.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No deliverables yet.</div>';
     return;
   }
-  const done = rows.filter(r => r.delivered===true||r.delivered==='true'||r.delivered==='TRUE').length;
-  el.innerHTML =
-    '<div style="font-size:11px;color:' + (done===rows.length?'var(--green)':'var(--amber)') + ';margin-bottom:8px">' + done + '/' + rows.length + ' delivered</div>' +
-    rows.map(r => {
-      const isDone = r.delivered===true||r.delivered==='true'||r.delivered==='TRUE';
-      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">' +
-        '<input type="checkbox" ' + (isDone?'checked':'') + ' onchange="toggleDeliverable('' + r.id + '','' + eventId + '',this.checked,'' + (ctx||'') + '')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--gold)">' +
-        '<div style="flex:1"><div style="font-size:12px;color:var(--cream)">' + (r.label||'Reel') + (r.quantity>1?' x'+r.quantity:'') + '</div>' +
-        (r.notes?'<div style="font-size:11px;color:var(--muted2)">'+r.notes+'</div>':'') + '</div>' +
-        '<button onclick="deleteDeliverableRow('' + r.id + '','' + eventId + '','' + (ctx||'') + '')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 4px">✕</button>' +
-        '</div>';
-    }).join('');
+  const done = rows.filter(function(r) { return r.delivered===true||r.delivered==='true'||r.delivered==='TRUE'; }).length;
+  const statusColor = done === rows.length ? 'var(--green)' : 'var(--amber)';
+  el.innerHTML = '<div style="font-size:11px;color:' + statusColor + ';margin-bottom:8px">' + done + '/' + rows.length + ' delivered</div><div id="del-rows-' + eventId + '"></div>';
+  const rowContainer = document.getElementById('del-rows-' + eventId);
+  rows.forEach(function(r) {
+    const isDone = r.delivered===true||r.delivered==='true'||r.delivered==='TRUE';
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = isDone;
+    cb.style.cssText = 'width:16px;height:16px;cursor:pointer;accent-color:var(--gold)';
+    cb.addEventListener('change', (function(rid) { return function() { toggleDeliverable(rid, eventId, this.checked, ctx); }; })(r.id));
+    const info = document.createElement('div');
+    info.style.flex = '1';
+    info.innerHTML = '<div style="font-size:12px;color:var(--cream)">' + (r.label||'Reel') + (r.quantity>1?' x'+r.quantity:'') + '</div>' + (r.notes ? '<div style="font-size:11px;color:var(--muted2)">'+r.notes+'</div>' : '');
+    const del = document.createElement('button');
+    del.innerHTML = '✕';
+    del.style.cssText = 'background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 4px';
+    del.addEventListener('click', (function(rid) { return function() { deleteDeliverableRow(rid, eventId, ctx); }; })(r.id));
+    div.appendChild(cb); div.appendChild(info); div.appendChild(del);
+    rowContainer.appendChild(div);
+  });
 }
 
 async function loadDeliverables(eventId, ctx) {
@@ -4410,25 +4420,27 @@ function addDeliverable(eventId) { showDeliverableForm(eventId, 'inline'); }
 function addDeliverableInModal(eventId) { showDeliverableForm(eventId, 'modal'); }
 
 function showDeliverableForm(eventId, ctx) {
-  document.getElementById('add-del-form')?.remove();
+  document.getElementById('add-del-form') && document.getElementById('add-del-form').remove();
   const anchorId = ctx === 'modal' ? 'del-modal-body-' + eventId : 'deliverables-' + eventId;
   const anchor = document.getElementById(anchorId);
   if (!anchor) return;
   const form = document.createElement('div');
   form.id = 'add-del-form';
   form.style.cssText = 'background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px';
-  form.innerHTML =
-    '<div style="display:grid;grid-template-columns:1fr 80px;gap:8px;margin-bottom:8px">' +
-      '<div><label style="font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace;text-transform:uppercase;display:block;margin-bottom:4px">Type</label>' +
-      '<select id="del-label" class="field-input" style="font-size:12px;padding:6px 8px"><option>Reel</option><option>Video</option><option>Photo Gallery</option><option>Story Highlight</option><option>Other</option></select></div>' +
-      '<div><label style="font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace;text-transform:uppercase;display:block;margin-bottom:4px">Qty</label>' +
-      '<input id="del-qty" type="number" min="1" value="1" class="field-input" style="font-size:12px;padding:6px 8px"></div></div>' +
-    '<div style="margin-bottom:8px"><label style="font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace;text-transform:uppercase;display:block;margin-bottom:4px">Notes (optional)</label>' +
-    '<input id="del-notes" type="text" placeholder="e.g. sent to client, posted..." class="field-input" style="font-size:12px;padding:6px 8px"></div>' +
-    '<div style="display:flex;gap:8px">' +
-      '<button class="btn btn-gold" style="font-size:11px;padding:4px 12px" onclick="saveDeliverableRow('' + eventId + '','' + ctx + '')">Save</button>' +
-      '<button class="btn btn-outline" style="font-size:11px;padding:4px 12px" onclick="document.getElementById('add-del-form').remove()">Cancel</button>' +
-    '</div>';
+  const sel = '<select id="del-label" class="field-input" style="font-size:12px;padding:6px 8px"><option>Reel</option><option>Video</option><option>Photo Gallery</option><option>Story Highlight</option><option>Other</option></select>';
+  form.innerHTML = '<div style="display:grid;grid-template-columns:1fr 80px;gap:8px;margin-bottom:8px"><div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">TYPE</label>' + sel + '</div><div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">QTY</label><input id="del-qty" type="number" min="1" value="1" class="field-input" style="font-size:12px;padding:6px 8px"></div></div><div style="margin-bottom:8px"><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">NOTES (optional)</label><input id="del-notes" type="text" placeholder="e.g. sent to client, posted..." class="field-input" style="font-size:12px;padding:6px 8px"></div><div style="display:flex;gap:8px" id="del-form-btns"></div>';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-gold';
+  saveBtn.style.cssText = 'font-size:11px;padding:4px 12px';
+  saveBtn.textContent = 'Save';
+  saveBtn.addEventListener('click', function() { saveDeliverableRow(eventId, ctx); });
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-outline';
+  cancelBtn.style.cssText = 'font-size:11px;padding:4px 12px';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', function() { document.getElementById('add-del-form').remove(); });
+  form.querySelector('#del-form-btns').appendChild(saveBtn);
+  form.querySelector('#del-form-btns').appendChild(cancelBtn);
   anchor.after(form);
 }
 
