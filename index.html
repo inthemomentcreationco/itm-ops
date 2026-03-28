@@ -3011,7 +3011,7 @@ function openFinEdit(id) {
 
       <div style="margin-bottom:16px">
         <label class="field-lbl">Package</label>
-        <select class="field-input" id="fe-package" onchange="onPackageChange('${id}',this.value)">
+        <select class="field-input" id="fe-package">
           <option value="" ${!r.package?'selected':''}>— Select package —</option>
           <option value="Just a Little Sumthin'" ${r.package==="Just a Little Sumthin'"?'selected':''}>Just a Little Sumthin' (2 reels)</option>
           <option value="Happy Medium" ${r.package==='Happy Medium'?'selected':''}>Happy Medium (3 reels)</option>
@@ -3145,10 +3145,25 @@ async function saveFinEdit(id) {
     hist.contractorName2 = c2name;
     hist.contractorHours2= c2hours ? parseFloat(c2hours) : hist.contractorHours2;
     hist.contractorPay2  = c2pay   ? parseFloat(c2pay)   : hist.contractorPay2;
+    // Auto-resize deliverables reels when package changes
+    if (pkg && PACKAGES[pkg]) {
+      let dl = {};
+      try { dl = hist.deliverables ? JSON.parse(hist.deliverables) : {}; } catch(e) { dl = {}; }
+      const reelCount = PACKAGES[pkg];
+      const existing = dl.reels || [];
+      dl.reels = Array(reelCount).fill(false).map((_, i) => existing[i] || false);
+      if (dl.raws === undefined) dl.raws = false;
+      hist.deliverables = JSON.stringify(dl);
+    }
   }
 
   try {
     await apiCall('saveFinancial', payload);
+    if (hist && hist.deliverables) {
+      let dl = {};
+      try { dl = JSON.parse(hist.deliverables); } catch(e) {}
+      await apiCall('saveDeliverables', { id: hist.id, planningCall: hist.planningCall||false, deliverables: dl });
+    }
     if (live) await apiCall('saveEvent', live);
     document.getElementById('fin-edit-modal').remove();
     toast('✓ Saved successfully');
