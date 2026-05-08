@@ -1,4 +1,4 @@
-<!-- v9 -->
+<!-- v10 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1221,7 +1221,8 @@ async function syncData() {
       DATA.tasks = (taskRows || []).map(t => ({
         id: String(t.id||''), title: String(t.title||''), dueDate: String(t.dueDate||''),
         priority: String(t.priority||'medium'), status: String(t.status||'pending'),
-        completedDate: String(t.completedDate||''), notes: String(t.notes||'')
+        completedDate: String(t.completedDate||''), notes: String(t.notes||''),
+        section: String(t.section||'')
       }));
     } catch(e) { console.warn('Tasks load failed:', e); }
 
@@ -6331,17 +6332,35 @@ async function toggleDeliverable(delId, checked) {
 }
 
 // ════════════════════════════════ PERSONAL TASKS ════════════════════════════════
+function getTaskSections() {
+  var tasks = DATA.tasks || [];
+  var secs = [];
+  var seen = {};
+  tasks.forEach(function(t) {
+    if (t.section && !seen[t.section]) { seen[t.section] = true; secs.push(t.section); }
+  });
+  return secs;
+}
+
+function buildSectionOptions(selected) {
+  var secs = getTaskSections();
+  var html = '<option value="">(No Section)</option>';
+  secs.forEach(function(s) {
+    html += '<option value="' + escHtml(s) + '"' + (selected === s ? ' selected' : '') + '>' + escHtml(s) + '</option>';
+  });
+  return html;
+}
+
 function renderPersonalTasks() {
   var el = document.getElementById('deliverables-content');
   var tasks = DATA.tasks || [];
   var today = new Date().toISOString().split('T')[0];
-
   var pending = tasks.filter(function(t) { return t.status !== 'done'; });
   var done = tasks.filter(function(t) { return t.status === 'done'; });
   var overdue = pending.filter(function(t) { return t.dueDate && t.dueDate < today; }).length;
   var pendingDels = (DATA.deliverables||[]).filter(function(d) { return d.status !== 'done'; }).length;
+  var sections = getTaskSections();
 
-  // Sort
   if (taskSort === 'priority') {
     var pOrder = { high: 0, medium: 1, low: 2 };
     pending.sort(function(a,b) { return (pOrder[a.priority]||1) - (pOrder[b.priority]||1) || (a.dueDate||'9999').localeCompare(b.dueDate||'9999'); });
@@ -6354,58 +6373,91 @@ function renderPersonalTasks() {
     + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--gold);border-bottom:2px solid var(--gold);margin-bottom:-2px">My Tasks</button>'
     + '</div>';
 
-  // Quick-add bar
-  el.innerHTML += '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:flex-end">'
-    + '<div class="field" style="flex:2;min-width:180px"><input class="field-input" id="task-new-title" placeholder="What needs to get done?" style="padding:10px 14px"></div>'
-    + '<div class="field" style="flex:0 0 130px"><input class="field-input" id="task-new-date" type="date" style="padding:10px 14px"></div>'
+  // Quick-add bar with section dropdown and default-today date
+  var secOpts = buildSectionOptions('');
+  el.innerHTML += '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:flex-end">'
+    + '<div class="field" style="flex:2;min-width:160px"><input class="field-input" id="task-new-title" placeholder="What needs to get done?" style="padding:10px 14px"></div>'
+    + '<div class="field" style="flex:0 0 130px"><input class="field-input" id="task-new-date" type="date" value="' + today + '" style="padding:10px 14px"></div>'
     + '<div class="field" style="flex:0 0 100px"><select class="field-input" id="task-new-priority" style="padding:10px 14px;cursor:pointer"><option value="high">🔴 High</option><option value="medium" selected>🟡 Medium</option><option value="low">🟢 Low</option></select></div>'
+    + '<div class="field" style="flex:0 0 140px"><select class="field-input" id="task-new-section" style="padding:10px 14px;cursor:pointer">' + secOpts + '</select></div>'
     + '<button class="btn btn-gold" style="padding:10px 18px;white-space:nowrap" onclick="addTask()">+ Add</button>'
     + '</div>';
 
-  // Sort buttons
-  el.innerHTML += '<div style="display:flex;gap:6px;margin-bottom:12px;align-items:center">'
+  // Action row: sort, add section, paste import
+  el.innerHTML += '<div style="display:flex;gap:6px;margin-bottom:12px;align-items:center;flex-wrap:wrap">'
     + '<span style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em">Sort:</span>'
     + '<button class="del-view-btn ' + (taskSort === 'date' ? 'active' : '') + '" style="padding:3px 10px;font-size:9px" onclick="taskSort=\'date\';renderDeliverables()">By Date</button>'
     + '<button class="del-view-btn ' + (taskSort === 'priority' ? 'active' : '') + '" style="padding:3px 10px;font-size:9px" onclick="taskSort=\'priority\';renderDeliverables()">By Priority</button>'
-    + (overdue > 0 ? '<span style="font-size:10px;color:var(--red);margin-left:auto">' + overdue + ' overdue</span>' : '')
+    + '<span style="margin-left:auto;display:flex;gap:6px">'
+    + '<button class="btn btn-outline" style="padding:4px 12px;font-size:10px" onclick="openAddSection()">+ Section</button>'
+    + '<button class="btn btn-outline" style="padding:4px 12px;font-size:10px" onclick="openPasteImport()">Paste Import</button>'
+    + '</span>'
+    + (overdue > 0 ? '<span style="font-size:10px;color:var(--red);width:100%;text-align:right">' + overdue + ' overdue</span>' : '')
     + '</div>';
 
   if (pending.length === 0 && done.length === 0) {
-    el.innerHTML += '<div class="empty" style="padding:32px"><div class="empty-icon">✓</div><div class="empty-msg">No tasks yet. Add one above to get started.</div></div>';
+    el.innerHTML += '<div class="empty" style="padding:32px"><div class="empty-icon">✓</div><div class="empty-msg">No tasks yet. Add one above or use Paste Import to bring in tasks from Notes.</div></div>';
     return;
   }
 
-  // Group by date
-  if (taskSort === 'date') {
-    var groups = {};
-    pending.forEach(function(t) {
-      var key = t.dueDate || 'no-date';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(t);
-    });
-    var sortedKeys = Object.keys(groups).sort(function(a,b) { return a === 'no-date' ? 1 : b === 'no-date' ? -1 : a.localeCompare(b); });
+  // Render by sections
+  var unsectioned = pending.filter(function(t) { return !t.section; });
+  var sectionedMap = {};
+  sections.forEach(function(s) { sectionedMap[s] = []; });
+  pending.forEach(function(t) {
+    if (t.section && sectionedMap[t.section]) sectionedMap[t.section].push(t);
+  });
 
-    sortedKeys.forEach(function(key) {
-      var label = key === 'no-date' ? 'No Due Date' : key === today ? 'Today' : (function() {
-        var tom = new Date(); tom.setDate(tom.getDate()+1);
-        return key === tom.toISOString().split('T')[0] ? 'Tomorrow' : new Date(key+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-      })();
-      var isOverdueGroup = key !== 'no-date' && key < today;
-      el.innerHTML += '<div style="font-size:11px;color:' + (isOverdueGroup ? 'var(--red)' : key === today ? 'var(--gold)' : 'var(--muted)') + ';font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em;margin:12px 0 6px;font-weight:600">' + (isOverdueGroup ? '⚠ ' : '') + label + '</div>';
-      groups[key].forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
-    });
-  } else {
-    pending.forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
+  sections.forEach(function(sec) {
+    var items = sectionedMap[sec] || [];
+    el.innerHTML += '<div style="margin:16px 0 6px;display:flex;align-items:center;gap:8px">'
+      + '<div style="font-size:13px;color:var(--cream);font-family:\'Cormorant\',serif;font-weight:600;font-size:18px">' + escHtml(sec) + '</div>'
+      + '<span style="font-size:10px;color:var(--muted)">' + items.length + '</span>'
+      + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:11px;padding:2px 6px" onclick="renameSection(\'' + escHtml(sec).replace(/'/g, "\\'") + '\')" title="Rename">✏</button>'
+      + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:11px;padding:2px 6px" onclick="deleteSection(\'' + escHtml(sec).replace(/'/g, "\\'") + '\')" title="Delete section">✕</button>'
+      + '<button style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:11px;padding:2px 6px" onclick="addTaskToSection(\'' + escHtml(sec).replace(/'/g, "\\'") + '\')" title="Add task to this section">+ task</button>'
+      + '</div>';
+    if (items.length === 0) {
+      el.innerHTML += '<div style="padding:8px 12px;font-size:12px;color:var(--muted2);font-style:italic">No tasks in this section</div>';
+    }
+    items.forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
+  });
+
+  // Unsectioned tasks
+  if (unsectioned.length > 0) {
+    if (sections.length > 0) {
+      el.innerHTML += '<div style="margin:16px 0 6px"><div style="font-size:13px;color:var(--muted);font-family:\'Cormorant\',serif;font-weight:600;font-size:18px">Other Tasks</div></div>';
+    }
+    if (taskSort === 'date') {
+      var groups = {};
+      unsectioned.forEach(function(t) {
+        var key = t.dueDate || 'no-date';
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(t);
+      });
+      var sortedKeys = Object.keys(groups).sort(function(a,b) { return a === 'no-date' ? 1 : b === 'no-date' ? -1 : a.localeCompare(b); });
+      sortedKeys.forEach(function(key) {
+        var label = key === 'no-date' ? 'No Due Date' : key === today ? 'Today' : (function() {
+          var tom = new Date(); tom.setDate(tom.getDate()+1);
+          return key === tom.toISOString().split('T')[0] ? 'Tomorrow' : new Date(key+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+        })();
+        var isOD = key !== 'no-date' && key < today;
+        el.innerHTML += '<div style="font-size:11px;color:' + (isOD ? 'var(--red)' : key === today ? 'var(--gold)' : 'var(--muted)') + ';font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em;margin:12px 0 6px;font-weight:600">' + (isOD ? '⚠ ' : '') + label + '</div>';
+        groups[key].forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
+      });
+    } else {
+      unsectioned.forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
+    }
   }
 
-  // Completed section
+  // Completed
   if (done.length > 0) {
     el.innerHTML += '<div style="margin-top:20px"><div class="sec-label">Completed (' + done.length + ')</div>';
     done.sort(function(a,b) { return (b.completedDate||'').localeCompare(a.completedDate||''); }).slice(0,20).forEach(function(t) {
       el.innerHTML += '<div class="del-item" style="opacity:0.6">'
         + '<input type="checkbox" class="del-cb" checked onchange="toggleTask(\'' + t.id + '\', false)">'
         + '<div class="del-item-info"><div class="del-item-label done">' + escHtml(t.title) + '</div>'
-        + '<div class="del-item-sub">' + (t.completedDate ? 'Done ' + new Date(t.completedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '') + '</div></div>'
+        + '<div class="del-item-sub">' + (t.section ? escHtml(t.section) + ' · ' : '') + (t.completedDate ? 'Done ' + new Date(t.completedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '') + '</div></div>'
         + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px" onclick="deleteTask(\'' + t.id + '\')" title="Delete">✕</button>'
         + '</div>';
     });
@@ -6415,7 +6467,7 @@ function renderPersonalTasks() {
 
 function renderTaskItem(t, today) {
   var isOverdue = t.dueDate && t.dueDate < today;
-  var dueLbl = t.dueDate ? new Date(t.dueDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+  var dueLbl = t.dueDate ? (t.dueDate === today ? 'Today' : new Date(t.dueDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})) : '';
   var prIcon = t.priority === 'high' ? '🔴' : t.priority === 'low' ? '🟢' : '🟡';
   return '<div class="del-item">'
     + '<input type="checkbox" class="del-cb" onchange="toggleTask(\'' + t.id + '\', true)">'
@@ -6430,21 +6482,111 @@ function renderTaskItem(t, today) {
     + '</div>';
 }
 
+function openAddSection() {
+  var name = prompt('New section name:');
+  if (!name || !name.trim()) return;
+  name = name.trim();
+  var existing = getTaskSections();
+  if (existing.indexOf(name) >= 0) { toast('Section already exists'); return; }
+  var placeholder = { id: 'task_sec_' + Date.now(), title: '(section placeholder)', section: name, dueDate: '', priority: 'medium', status: 'done', completedDate: new Date().toISOString().split('T')[0], notes: '__section_placeholder__' };
+  apiCall('saveTask', placeholder).then(function() { DATA.tasks.push(placeholder); renderDeliverables(); toast('Section added: ' + name); }).catch(function(e) { toast('Failed: ' + e.message); });
+}
+
+function renameSection(oldName) {
+  var newName = prompt('Rename section:', oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  newName = newName.trim();
+  var toUpdate = (DATA.tasks||[]).filter(function(t) { return t.section === oldName; });
+  var promises = toUpdate.map(function(t) { t.section = newName; return apiCall('saveTask', t); });
+  Promise.all(promises).then(function() { renderDeliverables(); toast('Renamed to ' + newName); }).catch(function(e) { toast('Failed: ' + e.message); });
+}
+
+function deleteSection(secName) {
+  if (!confirm('Delete section "' + secName + '"? Tasks will be moved to unsectioned.')) return;
+  var toUpdate = (DATA.tasks||[]).filter(function(t) { return t.section === secName; });
+  var promises = toUpdate.map(function(t) { t.section = ''; return apiCall('saveTask', t); });
+  Promise.all(promises).then(function() { renderDeliverables(); toast('Section removed'); }).catch(function(e) { toast('Failed: ' + e.message); });
+}
+
+function addTaskToSection(secName) {
+  var title = prompt('New task in "' + secName + '":');
+  if (!title || !title.trim()) return;
+  var today = new Date().toISOString().split('T')[0];
+  var t = { id: 'task_' + Date.now(), title: title.trim(), dueDate: today, priority: 'medium', status: 'pending', completedDate: '', notes: '', section: secName };
+  apiCall('saveTask', t).then(function() { DATA.tasks.push(t); renderDeliverables(); toast('Added to ' + secName); }).catch(function(e) { toast('Failed: ' + e.message); });
+}
+
+function openPasteImport() {
+  var sections = getTaskSections();
+  var secOpts = '<option value="">(No Section)</option>';
+  sections.forEach(function(s) { secOpts += '<option value="' + escHtml(s) + '">' + escHtml(s) + '</option>'; });
+  var ov = document.createElement('div');
+  ov.id = 'paste-import-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:24px;width:500px;max-width:100%">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--cream)">Paste Import</div><button onclick="document.getElementById(\'paste-import-overlay\').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Paste tasks from Notes — one task per line. Empty lines and lines starting with # become section headers. Checkboxes and bullets are stripped automatically.</div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Assign to Section</label><select class="field-input" id="import-section" style="cursor:pointer">' + secOpts + '<option value="__auto__">Auto-detect from headers</option></select></div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Default Priority</label><select class="field-input" id="import-priority" style="cursor:pointer"><option value="high">🔴 High</option><option value="medium" selected>🟡 Medium</option><option value="low">🟢 Low</option></select></div>'
+    + '<div class="field" style="margin-bottom:16px"><label class="field-lbl">Paste tasks here</label><textarea class="field-input" id="import-text" rows="10" style="padding:10px 14px;font-size:13px;resize:vertical" placeholder="Buy supplies\nCall venue\nSend contracts\n\n# Marketing\nUpdate Instagram\nSchedule TikTok"></textarea></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-outline" onclick="document.getElementById(\'paste-import-overlay\').remove()">Cancel</button><button class="btn btn-gold" onclick="runPasteImport()">Import Tasks</button></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(ev) { if (ev.target === ov) ov.remove(); });
+}
+
+async function runPasteImport() {
+  var raw = document.getElementById('import-text').value;
+  if (!raw.trim()) { toast('Paste some tasks first'); return; }
+  var sectionMode = document.getElementById('import-section').value;
+  var priority = document.getElementById('import-priority').value || 'medium';
+  var today = new Date().toISOString().split('T')[0];
+  var lines = raw.split('\n');
+  var tasks = [];
+  var currentSection = sectionMode === '__auto__' ? '' : sectionMode;
+
+  lines.forEach(function(line) {
+    var trimmed = line.replace(/^[\s\-\*•◦▪☐☑✓✔✅❌\[\]►→]+/, '').trim();
+    if (!trimmed) return;
+    if (sectionMode === '__auto__' && (line.trim().charAt(0) === '#' || (trimmed === trimmed.toUpperCase() && trimmed.length > 2 && trimmed.length < 60 && !/\d/.test(trimmed)))) {
+      currentSection = trimmed.replace(/^#+\s*/, '');
+      return;
+    }
+    tasks.push({ id: 'task_' + Date.now() + '_' + Math.random().toString(36).substr(2,5), title: trimmed, dueDate: today, priority: priority, status: 'pending', completedDate: '', notes: '', section: currentSection });
+  });
+
+  if (tasks.length === 0) { toast('No tasks found in pasted text'); return; }
+
+  toast('Importing ' + tasks.length + ' tasks...');
+  var success = 0;
+  for (var i = 0; i < tasks.length; i++) {
+    try {
+      await apiCall('saveTask', tasks[i]);
+      DATA.tasks.push(tasks[i]);
+      success++;
+    } catch(e) { console.warn('Import failed for:', tasks[i].title, e); }
+  }
+  document.getElementById('paste-import-overlay').remove();
+  toast('Imported ' + success + ' of ' + tasks.length + ' tasks');
+  renderDeliverables();
+}
+
 async function addTask() {
   var title = document.getElementById('task-new-title').value.trim();
   if (!title) { toast('Enter a task title'); return; }
+  var today = new Date().toISOString().split('T')[0];
+  var dateVal = document.getElementById('task-new-date').value || today;
+  var secVal = document.getElementById('task-new-section') ? document.getElementById('task-new-section').value : '';
   var t = {
-    id: 'task_' + Date.now(), title: title,
-    dueDate: document.getElementById('task-new-date').value || '',
+    id: 'task_' + Date.now(), title: title, dueDate: dateVal,
     priority: document.getElementById('task-new-priority').value || 'medium',
-    status: 'pending', completedDate: '', notes: ''
+    status: 'pending', completedDate: '', notes: '', section: secVal
   };
   try {
     await apiCall('saveTask', t);
     DATA.tasks.push(t);
     document.getElementById('task-new-title').value = '';
-    document.getElementById('task-new-date').value = '';
-    toast('✓ Added: ' + title);
+    toast('Added: ' + title);
   } catch(e) { toast('Save failed: ' + e.message); }
   renderDeliverables();
 }
@@ -6473,6 +6615,7 @@ async function cycleTaskPriority(taskId) {
 function openEditTask(taskId) {
   var t = (DATA.tasks||[]).find(function(x) { return x.id === taskId; });
   if (!t) return;
+  var secOpts = buildSectionOptions(t.section || '');
   var ov = document.createElement('div');
   ov.id = 'edit-task-overlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
@@ -6483,6 +6626,7 @@ function openEditTask(taskId) {
     + '  <div class="field"><label class="field-lbl">Due Date</label><input class="field-input" id="etask-due" type="date" value="' + (t.dueDate||'') + '"></div>'
     + '  <div class="field"><label class="field-lbl">Priority</label><select class="field-input" id="etask-priority" style="cursor:pointer"><option value="high" ' + (t.priority==='high'?'selected':'') + '>🔴 High</option><option value="medium" ' + (t.priority==='medium'?'selected':'') + '>🟡 Medium</option><option value="low" ' + (t.priority==='low'?'selected':'') + '>🟢 Low</option></select></div>'
     + '</div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Section</label><select class="field-input" id="etask-section" style="cursor:pointer">' + secOpts + '</select></div>'
     + '<div class="field" style="margin-bottom:16px"><label class="field-lbl">Notes</label><input class="field-input" id="etask-notes" value="' + escHtml(t.notes||'') + '" placeholder="Optional notes"></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-outline" onclick="document.getElementById(\'edit-task-overlay\').remove()">Cancel</button><button class="btn btn-gold" onclick="saveEditTask(\'' + taskId + '\')">Save</button></div>'
     + '</div>';
@@ -6496,8 +6640,9 @@ async function saveEditTask(taskId) {
   t.title = document.getElementById('etask-title').value.trim() || t.title;
   t.dueDate = document.getElementById('etask-due').value || '';
   t.priority = document.getElementById('etask-priority').value || 'medium';
+  t.section = document.getElementById('etask-section').value || '';
   t.notes = document.getElementById('etask-notes').value.trim();
-  try { await apiCall('saveTask', t); toast('✓ Updated'); } catch(e) { toast('Save failed: ' + e.message); }
+  try { await apiCall('saveTask', t); toast('Updated'); } catch(e) { toast('Save failed: ' + e.message); }
   document.getElementById('edit-task-overlay').remove();
   renderDeliverables();
 }
