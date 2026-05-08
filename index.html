@@ -786,6 +786,7 @@ let DATA = {
   adHocPayments:    [],
   historicalEvents: [],
   deliverables: [],
+  tasks: [],
   contractors:  [
     { id:'c1', name:'Lauren Nava', role:'Owner / Shooter' },
     { id:'c2', name:'Bianca Young', role:'Shooter' },
@@ -1191,6 +1192,38 @@ async function syncData() {
         notes:         String(d.notes||''),
       }));
     } catch(e) { console.warn('Deliverables load failed:', e); }
+
+    // Auto-init deliverables for upcoming events that don't have any yet
+    try {
+      const todayAuto = new Date().toISOString().split('T')[0];
+      const delEventIds = new Set((DATA.deliverables||[]).map(d => d.eventId));
+      const needInit = (DATA.historicalEvents||[]).filter(r => r.client && r.date && r.date >= todayAuto && !delEventIds.has(r.id));
+      for (const r of needInit) {
+        try {
+          const res = await apiCall('initEventDeliverables', { eventId: r.id, client: r.client, eventDate: r.date, package: r.package||'' });
+          if (res && res.initialized) console.log('Auto-init deliverables for', r.client, ':', res.count, 'items');
+        } catch(ie) { console.warn('Auto-init failed for', r.id, ie); }
+      }
+      if (needInit.length > 0) {
+        const delRows2 = await apiCall('getDeliverableRows');
+        DATA.deliverables = (delRows2 || []).map(d => ({
+          id: String(d.id||''), eventId: String(d.eventId||''), client: String(d.client||''),
+          eventDate: String(d.eventDate||''), type: String(d.type||''), label: String(d.label||d.type||''),
+          status: String(d.status||'pending'), assignee: String(d.assignee||''),
+          dueDate: String(d.dueDate||''), completedDate: String(d.completedDate||''), notes: String(d.notes||'')
+        }));
+      }
+    } catch(e) { console.warn('Auto-init deliverables failed:', e); }
+
+    // Load personal tasks
+    try {
+      const taskRows = await apiCall('getTasks');
+      DATA.tasks = (taskRows || []).map(t => ({
+        id: String(t.id||''), title: String(t.title||''), dueDate: String(t.dueDate||''),
+        priority: String(t.priority||'medium'), status: String(t.status||'pending'),
+        completedDate: String(t.completedDate||''), notes: String(t.notes||'')
+      }));
+    } catch(e) { console.warn('Tasks load failed:', e); }
 
     toast(`Synced: ${DATA.inquiries.length} inquiries · ${DATA.events.length} events · ${DATA.historicalEvents ? DATA.historicalEvents.length : 0} financial records`);
   } else {
@@ -5995,134 +6028,86 @@ async function gmailSendReply() {
 }
 
 // ════════════════════════════════ DELIVERABLES TAB ════════════════════════════════
-let delView = 'overview'; // 'overview' | 'detail' | 'team'
+let delView = 'overview'; // 'overview' | 'detail' | 'team' | 'completed' | 'tasks'
 let delDetailEventId = null;
+let taskSort = 'date'; // 'date' | 'priority'
 
 function renderDeliverables() {
-  const el = document.getElementById('deliverables-content');
-  const dels = DATA.deliverables || [];
-  const allFin = DATA.historicalEvents || [];
-  const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  var el = document.getElementById('deliverables-content');
 
-  // Group deliverables by eventId
-  const byEvent = {};
-  dels.forEach(function(d) {
-    if (!byEvent[d.eventId]) byEvent[d.eventId] = [];
-    byEvent[d.eventId].push(d);
-  });
+  // Top-level sub-tabs: Event Deliverables vs My Tasks
+  if (delView === 'tasks') { renderPersonalTasks(); return; }
+  if (delView === 'detail' && delDetailEventId) { renderDeliverablesDetail(delDetailEventId); return; }
+  if (delView === 'team') { renderDeliverablesTeam(); return; }
 
-  // Build event list with progress info
-  const eventCards = allFin
-    .filter(function(r) { return r.client && r.date; })
-    .map(function(r) {
-      var items = byEvent[r.id] || [];
-      var done = items.filter(function(d) { return d.status === 'done'; }).length;
-      var total = items.length;
-      var overdue = items.filter(function(d) { return d.status !== 'done' && d.dueDate && d.dueDate < todayStr; }).length;
-      return { id: r.id, client: r.client, date: r.date, eventType: r.eventType||'', pkg: r.package||'', items: items, done: done, total: total, overdue: overdue, source: r.source||'' };
-    })
-    .filter(function(r) { return r.total > 0 || (r.date >= todayStr); })
-    .sort(function(a,b) { return (a.date||'').localeCompare(b.date||''); });
+  var dels = DATA.deliverables || [];
+  var allFin = DATA.historicalEvents || [];
+  var today = new Date();
+  var todayStr = today.toISOString().split('T')[0];
 
-  // Active = has deliverables and not all done, OR upcoming
-  var active = eventCards.filter(function(c) { return c.total === 0 || c.done < c.total; });
-  var completed = eventCards.filter(function(c) { return c.total > 0 && c.done === c.total; });
+  var byEvent = {};
+  dels.forEach(function(d) { if (!byEvent[d.eventId]) byEvent[d.eventId] = []; byEvent[d.eventId].push(d); });
 
-  // Stats
+  var eventCards = allFin.filter(function(r) { return r.client && r.date; }).map(function(r) {
+    var items = byEvent[r.id] || [];
+    var done = items.filter(function(d) { return d.status === 'done'; }).length;
+    var total = items.length;
+    var overdue = items.filter(function(d) { return d.status !== 'done' && d.dueDate && d.dueDate < todayStr; }).length;
+    return { id: r.id, client: r.client, date: r.date, eventType: r.eventType||'', pkg: r.package||'', items: items, done: done, total: total, overdue: overdue, source: r.source||'' };
+  }).filter(function(r) { return r.total > 0; }).sort(function(a,b) { return (a.date||'').localeCompare(b.date||''); });
+
+  var active = eventCards.filter(function(c) { return c.done < c.total; });
+  var completed = eventCards.filter(function(c) { return c.done === c.total; });
+
   var totalPending = dels.filter(function(d) { return d.status !== 'done'; }).length;
   var totalOverdue = dels.filter(function(d) { return d.status !== 'done' && d.dueDate && d.dueDate < todayStr; }).length;
   var totalDone = dels.filter(function(d) { return d.status === 'done'; }).length;
-  var eventsNeedSetup = allFin.filter(function(r) { return r.date >= todayStr && r.client && !(byEvent[r.id] && byEvent[r.id].length > 0); }).length;
-
-  if (delView === 'detail' && delDetailEventId) {
-    renderDeliverablesDetail(delDetailEventId);
-    return;
-  }
-  if (delView === 'team') {
-    renderDeliverablesTeam();
-    return;
-  }
+  var pendingTasks = (DATA.tasks||[]).filter(function(t) { return t.status !== 'done'; }).length;
 
   el.innerHTML = ''
+    + '<div style="display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid var(--border)">'
+    + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:' + (delView !== 'tasks' ? 'var(--gold)' : 'var(--muted)') + ';border-bottom:2px solid ' + (delView !== 'tasks' ? 'var(--gold)' : 'transparent') + ';margin-bottom:-2px;transition:all .2s" onclick="delView=\'overview\';renderDeliverables()">Event Deliverables</button>'
+    + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:' + (delView === 'tasks' ? 'var(--gold)' : 'var(--muted)') + ';border-bottom:2px solid ' + (delView === 'tasks' ? 'var(--gold)' : 'transparent') + ';margin-bottom:-2px;transition:all .2s" onclick="delView=\'tasks\';renderDeliverables()">My Tasks' + (pendingTasks > 0 ? ' <span style="background:var(--gold);color:#fff;border-radius:10px;padding:1px 6px;font-size:9px;margin-left:4px">' + pendingTasks + '</span>' : '') + '</button>'
+    + '</div>'
+
     + '<div class="stats-row" style="margin-bottom:16px">'
-    + '  <div class="stat-card ' + (totalOverdue > 0 ? 'red' : 'green') + '">'
-    + '    <div class="stat-lbl">Overdue</div>'
-    + '    <div class="stat-val">' + totalOverdue + '</div>'
-    + '    <div class="stat-sub">past due date</div>'
-    + '  </div>'
-    + '  <div class="stat-card amber">'
-    + '    <div class="stat-lbl">Pending</div>'
-    + '    <div class="stat-val">' + totalPending + '</div>'
-    + '    <div class="stat-sub">items to complete</div>'
-    + '  </div>'
-    + '  <div class="stat-card green">'
-    + '    <div class="stat-lbl">Completed</div>'
-    + '    <div class="stat-val">' + totalDone + '</div>'
-    + '    <div class="stat-sub">delivered</div>'
-    + '  </div>'
-    + '  <div class="stat-card ' + (eventsNeedSetup > 0 ? 'gold' : '') + '">'
-    + '    <div class="stat-lbl">Need Setup</div>'
-    + '    <div class="stat-val">' + eventsNeedSetup + '</div>'
-    + '    <div class="stat-sub">upcoming events</div>'
-    + '  </div>'
+    + '  <div class="stat-card ' + (totalOverdue > 0 ? 'red' : 'green') + '"><div class="stat-lbl">Overdue</div><div class="stat-val">' + totalOverdue + '</div><div class="stat-sub">past due date</div></div>'
+    + '  <div class="stat-card amber"><div class="stat-lbl">Pending</div><div class="stat-val">' + totalPending + '</div><div class="stat-sub">items to complete</div></div>'
+    + '  <div class="stat-card green"><div class="stat-lbl">Completed</div><div class="stat-val">' + totalDone + '</div><div class="stat-sub">delivered</div></div>'
+    + '  <div class="stat-card"><div class="stat-lbl">Events Tracked</div><div class="stat-val">' + eventCards.length + '</div><div class="stat-sub">with deliverables</div></div>'
     + '</div>'
 
     + '<div class="del-view-tabs">'
-    + '  <button class="del-view-btn ' + (delView === 'overview' ? 'active' : '') + '" onclick="delView=\'overview\';renderDeliverables()">Active Events</button>'
-    + '  <button class="del-view-btn" onclick="delView=\'team\';renderDeliverables()">By Team</button>'
-    + '  <button class="del-view-btn" onclick="delView=\'completed\';renderDeliverables()">Completed (' + completed.length + ')</button>'
+    + '  <button class="del-view-btn ' + (delView === 'overview' ? 'active' : '') + '" onclick="delView=\'overview\';renderDeliverables()">In Progress (' + active.length + ')</button>'
+    + '  <button class="del-view-btn ' + (delView === 'team' ? 'active' : '') + '" onclick="delView=\'team\';renderDeliverables()">By Team</button>'
+    + '  <button class="del-view-btn ' + (delView === 'completed' ? 'active' : '') + '" onclick="delView=\'completed\';renderDeliverables()">Completed (' + completed.length + ')</button>'
     + '</div>';
 
   var showList = delView === 'completed' ? completed : active;
 
-  if (showList.length === 0 && eventsNeedSetup === 0) {
-    el.innerHTML += '<div class="empty"><div class="empty-icon">📋</div><div class="empty-msg">' + (delView === 'completed' ? 'No completed events yet.' : 'No active deliverables. Set up deliverables for upcoming events.') + '</div></div>';
+  if (showList.length === 0) {
+    el.innerHTML += '<div class="empty"><div class="empty-icon">📋</div><div class="empty-msg">' + (delView === 'completed' ? 'No completed events yet.' : 'No active deliverables yet. Deliverables are auto-created for upcoming events on sync.') + '</div></div>';
     return;
   }
 
-  // Show events needing setup first (only in active view)
-  if (delView !== 'completed') {
-    var needSetup = allFin.filter(function(r) { return r.date >= todayStr && r.client && !(byEvent[r.id] && byEvent[r.id].length > 0); }).sort(function(a,b) { return (a.date||'').localeCompare(b.date||''); });
-    if (needSetup.length > 0) {
-      el.innerHTML += '<div class="sec-label" style="margin-top:4px">Needs Setup</div>';
-      needSetup.forEach(function(r) {
-        var dStr = r.date ? new Date(r.date + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : 'No date';
-        el.innerHTML += '<div class="del-event-card" style="border-left:3px solid var(--gold)">'
-          + '<div class="del-event-header">'
-          + '  <div><div class="del-event-title">' + escHtml(r.client) + '</div>'
-          + '  <div class="del-event-meta"><span>' + dStr + '</span><span>' + escHtml(r.eventType||'Event') + '</span>' + (r.package ? '<span>' + escHtml(r.package) + '</span>' : '') + '</div></div>'
-          + '  <button class="btn btn-gold" style="font-size:11px;padding:6px 14px" onclick="initEventDels(\'' + r.id + '\')">Set Up Deliverables</button>'
-          + '</div>'
-          + '</div>';
-      });
-    }
-  }
+  showList.forEach(function(c) {
+    var pct = c.total > 0 ? Math.round(c.done / c.total * 100) : 0;
+    var barColor = c.done === c.total ? 'var(--green)' : c.overdue > 0 ? 'var(--red)' : 'var(--gold)';
+    var dStr = c.date ? new Date(c.date + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
+    var isSM = c.source === 'spilled_milk' || (c.id||'').startsWith('sm_');
 
-  // Show event cards with progress
-  if (showList.length > 0) {
-    if (delView !== 'completed' && eventsNeedSetup > 0) {
-      el.innerHTML += '<div class="sec-label">In Progress</div>';
-    }
-    showList.forEach(function(c) {
-      var pct = c.total > 0 ? Math.round(c.done / c.total * 100) : 0;
-      var barColor = c.done === c.total ? 'var(--green)' : c.overdue > 0 ? 'var(--red)' : 'var(--gold)';
-      var dStr = c.date ? new Date(c.date + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
-      var isSM = c.source === 'spilled_milk' || (c.id||'').startsWith('sm_');
-
-      el.innerHTML += '<div class="del-event-card" style="cursor:pointer" onclick="delDetailEventId=\'' + c.id + '\';delView=\'detail\';renderDeliverables()">'
-        + '<div class="del-event-header">'
-        + '  <div><div class="del-event-title">' + escHtml(c.client) + (isSM ? ' <span style="font-size:9px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold);font-weight:400">SM</span>' : '') + '</div>'
-        + '  <div class="del-event-meta"><span>' + dStr + '</span><span>' + escHtml(c.eventType||'Event') + '</span>' + (c.pkg ? '<span>' + escHtml(c.pkg) + '</span>' : '') + '</div></div>'
-        + '  <div style="text-align:right">'
-        + '    <div style="font-size:20px;font-family:\'Cormorant\',serif;color:' + (c.done === c.total ? 'var(--green)' : 'var(--cream)') + '">' + c.done + '/' + c.total + '</div>'
-        + '    <div style="font-size:10px;color:' + (c.overdue > 0 ? 'var(--red)' : 'var(--muted2)') + '">' + (c.overdue > 0 ? c.overdue + ' overdue' : pct + '% done') + '</div>'
-        + '  </div>'
-        + '</div>'
-        + '<div class="del-progress-bar"><div class="del-progress-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
-        + '</div>';
-    });
-  }
+    el.innerHTML += '<div class="del-event-card" style="cursor:pointer" onclick="delDetailEventId=\'' + c.id + '\';delView=\'detail\';renderDeliverables()">'
+      + '<div class="del-event-header">'
+      + '  <div><div class="del-event-title">' + escHtml(c.client) + (isSM ? ' <span style="font-size:9px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold);font-weight:400">SM</span>' : '') + '</div>'
+      + '  <div class="del-event-meta"><span>' + dStr + '</span><span>' + escHtml(c.eventType||'Event') + '</span>' + (c.pkg ? '<span>' + escHtml(c.pkg) + '</span>' : '') + '</div></div>'
+      + '  <div style="text-align:right">'
+      + '    <div style="font-size:20px;font-family:\'Cormorant\',serif;color:' + (c.done === c.total ? 'var(--green)' : 'var(--cream)') + '">' + c.done + '/' + c.total + '</div>'
+      + '    <div style="font-size:10px;color:' + (c.overdue > 0 ? 'var(--red)' : 'var(--muted2)') + '">' + (c.overdue > 0 ? c.overdue + ' overdue' : pct + '% done') + '</div>'
+      + '  </div>'
+      + '</div>'
+      + '<div class="del-progress-bar"><div class="del-progress-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
+      + '</div>';
+  });
 }
 
 function renderDeliverablesDetail(eventId) {
@@ -6140,12 +6125,12 @@ function renderDeliverablesDetail(eventId) {
   var barColor = done === total ? 'var(--green)' : 'var(--gold)';
   var dStr = ev.date ? new Date(ev.date + 'T12:00:00').toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'}) : '';
 
-  // Group by phase
   var phases = [
     { key: 'pre', label: 'Pre-Event', types: ['prep_call','shot_list'] },
     { key: 'raws', label: 'Raw Footage', types: ['raws_upload','raws_review','raws_sent'] },
     { key: 'reels', label: 'Reels', match: function(t) { return t.startsWith('reel_'); } },
-    { key: 'post', label: 'Post-Delivery', types: ['feedback_sent'] }
+    { key: 'post', label: 'Post-Delivery', types: ['feedback_sent'] },
+    { key: 'custom', label: 'Custom', match: function(t) { return t.startsWith('custom_'); } }
   ];
 
   var html = '<div style="margin-bottom:16px">'
@@ -6175,28 +6160,27 @@ function renderDeliverablesDetail(eventId) {
       var isDone = d.status === 'done';
       var isOverdue = !isDone && d.dueDate && d.dueDate < today;
       var dueLbl = '';
-      if (d.dueDate) {
-        var dd = new Date(d.dueDate + 'T12:00:00');
-        dueLbl = 'Due ' + dd.toLocaleDateString('en-US', {month:'short', day:'numeric'});
-      }
-      if (d.completedDate) {
-        var cd = new Date(d.completedDate + 'T12:00:00');
-        dueLbl = 'Done ' + cd.toLocaleDateString('en-US', {month:'short', day:'numeric'});
-      }
+      if (d.completedDate) { dueLbl = 'Done ' + new Date(d.completedDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'}); }
+      else if (d.dueDate) { dueLbl = 'Due ' + new Date(d.dueDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'}); }
       var badgeClass = isDone ? 'done' : isOverdue ? 'overdue' : 'pending';
       var badgeText = isDone ? 'Done' : isOverdue ? 'Overdue' : 'Pending';
 
       html += '<div class="del-item">'
         + '<input type="checkbox" class="del-cb" ' + (isDone ? 'checked' : '') + ' onchange="toggleDeliverable(\'' + d.id + '\', this.checked)">'
-        + '<div class="del-item-info">'
+        + '<div class="del-item-info" style="cursor:pointer" onclick="openEditDeliverable(\'' + d.id + '\')">'
         + '  <div class="del-item-label ' + (isDone ? 'done' : '') + '">' + escHtml(d.label) + '</div>'
         + '  <div class="del-item-sub">' + (d.assignee ? escHtml(d.assignee) + ' · ' : '') + dueLbl + '</div>'
         + '</div>'
+        + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px;flex-shrink:0" onclick="openEditDeliverable(\'' + d.id + '\')" title="Edit">✏</button>'
+        + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px;flex-shrink:0" onclick="deleteDeliverable(\'' + d.id + '\')" title="Delete">✕</button>'
         + '<span class="del-item-badge ' + badgeClass + '">' + badgeText + '</span>'
         + '</div>';
     });
     html += '</div>';
   });
+
+  // Add deliverable button
+  html += '<button class="btn btn-outline" style="width:100%;margin-top:8px;font-size:11px" onclick="openAddDeliverable(\'' + eventId + '\')">+ Add Deliverable</button>';
 
   el.innerHTML = html;
 }
@@ -6205,15 +6189,18 @@ function renderDeliverablesTeam() {
   var el = document.getElementById('deliverables-content');
   var dels = DATA.deliverables || [];
   var today = new Date().toISOString().split('T')[0];
+  var pendingTasks = (DATA.tasks||[]).filter(function(t) { return t.status !== 'done'; }).length;
 
-  el.innerHTML = '<div style="margin-bottom:16px">'
+  el.innerHTML = '<div style="display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid var(--border)">'
+    + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--gold);border-bottom:2px solid var(--gold);margin-bottom:-2px" onclick="delView=\'overview\';renderDeliverables()">Event Deliverables</button>'
+    + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px" onclick="delView=\'tasks\';renderDeliverables()">My Tasks' + (pendingTasks > 0 ? ' <span style="background:var(--gold);color:#fff;border-radius:10px;padding:1px 6px;font-size:9px;margin-left:4px">' + pendingTasks + '</span>' : '') + '</button>'
+    + '</div>'
     + '<div class="del-view-tabs">'
-    + '  <button class="del-view-btn" onclick="delView=\'overview\';renderDeliverables()">Active Events</button>'
+    + '  <button class="del-view-btn" onclick="delView=\'overview\';renderDeliverables()">In Progress</button>'
     + '  <button class="del-view-btn active">By Team</button>'
     + '  <button class="del-view-btn" onclick="delView=\'completed\';renderDeliverables()">Completed</button>'
-    + '</div></div>';
+    + '</div>';
 
-  // Group by assignee
   var byAssignee = {};
   dels.filter(function(d) { return d.status !== 'done'; }).forEach(function(d) {
     var key = d.assignee || 'Unassigned';
@@ -6224,33 +6211,111 @@ function renderDeliverablesTeam() {
   var names = Object.keys(byAssignee).sort(function(a,b) { return a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b); });
 
   if (names.length === 0) {
-    el.innerHTML += '<div class="empty"><div class="empty-icon">👤</div><div class="empty-msg">No pending deliverables assigned to team members.<br>Assign contractors in event details to see them here.</div></div>';
+    el.innerHTML += '<div class="empty"><div class="empty-icon">👤</div><div class="empty-msg">No pending deliverables assigned to team members.</div></div>';
     return;
   }
 
   names.forEach(function(name) {
     var items = byAssignee[name];
     var overdue = items.filter(function(d) { return d.dueDate && d.dueDate < today; }).length;
-
     el.innerHTML += '<div class="del-team-section">'
       + '<div class="del-team-name">' + escHtml(name) + ' <span style="font-size:12px;color:var(--muted);font-family:\'Outfit\',sans-serif">' + items.length + ' pending' + (overdue > 0 ? ' · <span style="color:var(--red)">' + overdue + ' overdue</span>' : '') + '</span></div>';
-
     items.sort(function(a,b) { return (a.dueDate||'9999').localeCompare(b.dueDate||'9999'); }).forEach(function(d) {
       var isOverdue = d.dueDate && d.dueDate < today;
       var dueLbl = d.dueDate ? 'Due ' + new Date(d.dueDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
-
       el.innerHTML += '<div class="del-item">'
         + '<input type="checkbox" class="del-cb" onchange="toggleDeliverable(\'' + d.id + '\', this.checked)">'
-        + '<div class="del-item-info">'
-        + '  <div class="del-item-label">' + escHtml(d.label) + '</div>'
-        + '  <div class="del-item-sub">' + escHtml(d.client) + ' · ' + dueLbl + '</div>'
-        + '</div>'
-        + '<span class="del-item-badge ' + (isOverdue ? 'overdue' : 'pending') + '">' + (isOverdue ? 'Overdue' : 'Pending') + '</span>'
-        + '</div>';
+        + '<div class="del-item-info"><div class="del-item-label">' + escHtml(d.label) + '</div><div class="del-item-sub">' + escHtml(d.client) + ' · ' + dueLbl + '</div></div>'
+        + '<span class="del-item-badge ' + (isOverdue ? 'overdue' : 'pending') + '">' + (isOverdue ? 'Overdue' : 'Pending') + '</span></div>';
     });
-
     el.innerHTML += '</div>';
   });
+}
+
+// ── Edit / Add / Delete deliverables ──
+function openEditDeliverable(delId) {
+  var d = (DATA.deliverables || []).find(function(x) { return x.id === delId; });
+  if (!d) return;
+  var ov = document.createElement('div');
+  ov.id = 'edit-del-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:100%">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--cream)">Edit Deliverable</div><button onclick="document.getElementById(\'edit-del-overlay\').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button></div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Title</label><input class="field-input" id="edel-label" value="' + escHtml(d.label) + '"></div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+    + '  <div class="field"><label class="field-lbl">Due Date</label><input class="field-input" id="edel-due" type="date" value="' + (d.dueDate||'') + '"></div>'
+    + '  <div class="field"><label class="field-lbl">Assignee</label><input class="field-input" id="edel-assignee" value="' + escHtml(d.assignee||'') + '" placeholder="e.g. Lauren, Bianca"></div>'
+    + '</div>'
+    + '<div class="field" style="margin-bottom:16px"><label class="field-lbl">Notes</label><input class="field-input" id="edel-notes" value="' + escHtml(d.notes||'') + '" placeholder="Optional notes"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-outline" onclick="document.getElementById(\'edit-del-overlay\').remove()">Cancel</button><button class="btn btn-gold" onclick="saveEditDeliverable(\'' + delId + '\')">Save</button></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(ev) { if (ev.target === ov) ov.remove(); });
+}
+
+async function saveEditDeliverable(delId) {
+  var d = (DATA.deliverables || []).find(function(x) { return x.id === delId; });
+  if (!d) return;
+  d.label = document.getElementById('edel-label').value.trim() || d.label;
+  d.dueDate = document.getElementById('edel-due').value || '';
+  d.assignee = document.getElementById('edel-assignee').value.trim();
+  d.notes = document.getElementById('edel-notes').value.trim();
+  try {
+    await apiCall('saveDeliverable', { id: d.id, eventId: d.eventId, client: d.client, eventDate: d.eventDate, type: d.type, label: d.label, status: d.status, assignee: d.assignee, dueDate: d.dueDate, completedDate: d.completedDate, notes: d.notes });
+    toast('✓ Updated');
+  } catch(e) { toast('Save failed: ' + e.message); }
+  document.getElementById('edit-del-overlay').remove();
+  renderDeliverables();
+}
+
+function openAddDeliverable(eventId) {
+  var ev = (DATA.historicalEvents||[]).find(function(r) { return r.id === eventId; });
+  var ov = document.createElement('div');
+  ov.id = 'add-del-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:100%">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--cream)">Add Deliverable</div><button onclick="document.getElementById(\'add-del-overlay\').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button></div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Title *</label><input class="field-input" id="adel-label" placeholder="e.g. Contractor brief call"></div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+    + '  <div class="field"><label class="field-lbl">Due Date</label><input class="field-input" id="adel-due" type="date"></div>'
+    + '  <div class="field"><label class="field-lbl">Assignee</label><input class="field-input" id="adel-assignee" placeholder="e.g. Lauren"></div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-outline" onclick="document.getElementById(\'add-del-overlay\').remove()">Cancel</button><button class="btn btn-gold" onclick="saveAddDeliverable(\'' + eventId + '\')">Add</button></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(ev) { if (ev.target === ov) ov.remove(); });
+}
+
+async function saveAddDeliverable(eventId) {
+  var label = document.getElementById('adel-label').value.trim();
+  if (!label) { toast('Title is required'); return; }
+  var ev = (DATA.historicalEvents||[]).find(function(r) { return r.id === eventId; });
+  var newDel = {
+    id: 'del_' + eventId + '_custom_' + Date.now(),
+    eventId: eventId, client: ev ? ev.client : '', eventDate: ev ? ev.date : '',
+    type: 'custom_' + Date.now(), label: label, status: 'pending',
+    assignee: document.getElementById('adel-assignee').value.trim(),
+    dueDate: document.getElementById('adel-due').value || '', completedDate: '', notes: ''
+  };
+  try {
+    await apiCall('saveDeliverable', newDel);
+    DATA.deliverables.push(newDel);
+    toast('✓ Added: ' + label);
+  } catch(e) { toast('Save failed: ' + e.message); }
+  document.getElementById('add-del-overlay').remove();
+  renderDeliverables();
+}
+
+async function deleteDeliverable(delId) {
+  var d = (DATA.deliverables || []).find(function(x) { return x.id === delId; });
+  if (!d) return;
+  if (!confirm('Delete "' + d.label + '"?')) return;
+  try {
+    await apiCall('deleteDeliverable', { id: delId });
+    DATA.deliverables = DATA.deliverables.filter(function(x) { return x.id !== delId; });
+    toast('Deleted');
+  } catch(e) { toast('Delete failed: ' + e.message); }
+  renderDeliverables();
 }
 
 async function toggleDeliverable(delId, checked) {
@@ -6259,44 +6324,194 @@ async function toggleDeliverable(delId, checked) {
   d.status = checked ? 'done' : 'pending';
   d.completedDate = checked ? new Date().toISOString().split('T')[0] : '';
   try {
-    await apiCall('saveDeliverable', {
-      id: d.id, eventId: d.eventId, client: d.client, eventDate: d.eventDate,
-      type: d.type, label: d.label, status: d.status, assignee: d.assignee,
-      dueDate: d.dueDate, completedDate: d.completedDate, notes: d.notes
-    });
+    await apiCall('saveDeliverable', { id: d.id, eventId: d.eventId, client: d.client, eventDate: d.eventDate, type: d.type, label: d.label, status: d.status, assignee: d.assignee, dueDate: d.dueDate, completedDate: d.completedDate, notes: d.notes });
     toast(checked ? '✓ ' + d.label + ' done' : d.label + ' marked pending');
   } catch(e) { toast('Save failed: ' + e.message); d.status = checked ? 'pending' : 'done'; }
   renderDeliverables();
 }
 
-async function initEventDels(eventId) {
-  var allFin = DATA.historicalEvents || [];
-  var ev = allFin.find(function(r) { return r.id === eventId; });
-  if (!ev) { toast('Event not found'); return; }
-  toast('Setting up deliverables...');
-  try {
-    var result = await apiCall('initEventDeliverables', {
-      eventId: ev.id, client: ev.client, eventDate: ev.date, package: ev.package||''
+// ════════════════════════════════ PERSONAL TASKS ════════════════════════════════
+function renderPersonalTasks() {
+  var el = document.getElementById('deliverables-content');
+  var tasks = DATA.tasks || [];
+  var today = new Date().toISOString().split('T')[0];
+
+  var pending = tasks.filter(function(t) { return t.status !== 'done'; });
+  var done = tasks.filter(function(t) { return t.status === 'done'; });
+  var overdue = pending.filter(function(t) { return t.dueDate && t.dueDate < today; }).length;
+  var pendingDels = (DATA.deliverables||[]).filter(function(d) { return d.status !== 'done'; }).length;
+
+  // Sort
+  if (taskSort === 'priority') {
+    var pOrder = { high: 0, medium: 1, low: 2 };
+    pending.sort(function(a,b) { return (pOrder[a.priority]||1) - (pOrder[b.priority]||1) || (a.dueDate||'9999').localeCompare(b.dueDate||'9999'); });
+  } else {
+    pending.sort(function(a,b) { return (a.dueDate||'9999').localeCompare(b.dueDate||'9999'); });
+  }
+
+  el.innerHTML = '<div style="display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid var(--border)">'
+    + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px" onclick="delView=\'overview\';renderDeliverables()">Event Deliverables' + (pendingDels > 0 ? ' <span style="background:var(--gold);color:#fff;border-radius:10px;padding:1px 6px;font-size:9px;margin-left:4px">' + pendingDels + '</span>' : '') + '</button>'
+    + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--gold);border-bottom:2px solid var(--gold);margin-bottom:-2px">My Tasks</button>'
+    + '</div>';
+
+  // Quick-add bar
+  el.innerHTML += '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:flex-end">'
+    + '<div class="field" style="flex:2;min-width:180px"><input class="field-input" id="task-new-title" placeholder="What needs to get done?" style="padding:10px 14px"></div>'
+    + '<div class="field" style="flex:0 0 130px"><input class="field-input" id="task-new-date" type="date" style="padding:10px 14px"></div>'
+    + '<div class="field" style="flex:0 0 100px"><select class="field-input" id="task-new-priority" style="padding:10px 14px;cursor:pointer"><option value="high">🔴 High</option><option value="medium" selected>🟡 Medium</option><option value="low">🟢 Low</option></select></div>'
+    + '<button class="btn btn-gold" style="padding:10px 18px;white-space:nowrap" onclick="addTask()">+ Add</button>'
+    + '</div>';
+
+  // Sort buttons
+  el.innerHTML += '<div style="display:flex;gap:6px;margin-bottom:12px;align-items:center">'
+    + '<span style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em">Sort:</span>'
+    + '<button class="del-view-btn ' + (taskSort === 'date' ? 'active' : '') + '" style="padding:3px 10px;font-size:9px" onclick="taskSort=\'date\';renderDeliverables()">By Date</button>'
+    + '<button class="del-view-btn ' + (taskSort === 'priority' ? 'active' : '') + '" style="padding:3px 10px;font-size:9px" onclick="taskSort=\'priority\';renderDeliverables()">By Priority</button>'
+    + (overdue > 0 ? '<span style="font-size:10px;color:var(--red);margin-left:auto">' + overdue + ' overdue</span>' : '')
+    + '</div>';
+
+  if (pending.length === 0 && done.length === 0) {
+    el.innerHTML += '<div class="empty" style="padding:32px"><div class="empty-icon">✓</div><div class="empty-msg">No tasks yet. Add one above to get started.</div></div>';
+    return;
+  }
+
+  // Group by date
+  if (taskSort === 'date') {
+    var groups = {};
+    pending.forEach(function(t) {
+      var key = t.dueDate || 'no-date';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(t);
     });
-    if (result && result.initialized) {
-      toast('✓ ' + result.count + ' deliverables created for ' + ev.client);
-      var delRows = await apiCall('getDeliverableRows');
-      DATA.deliverables = (delRows || []).map(function(d) {
-        return {
-          id: String(d.id||''), eventId: String(d.eventId||''), client: String(d.client||''),
-          eventDate: String(d.eventDate||''), type: String(d.type||''), label: String(d.label||d.type||''),
-          status: String(d.status||'pending'), assignee: String(d.assignee||''),
-          dueDate: String(d.dueDate||''), completedDate: String(d.completedDate||''), notes: String(d.notes||'')
-        };
-      });
-      delDetailEventId = eventId;
-      delView = 'detail';
-      renderDeliverables();
-    } else {
-      toast(result && result.reason === 'already exists' ? 'Deliverables already set up for this event' : 'Could not initialize');
-      if (result && result.reason === 'already exists') { delDetailEventId = eventId; delView = 'detail'; renderDeliverables(); }
-    }
-  } catch(e) { toast('Error: ' + e.message); }
+    var sortedKeys = Object.keys(groups).sort(function(a,b) { return a === 'no-date' ? 1 : b === 'no-date' ? -1 : a.localeCompare(b); });
+
+    sortedKeys.forEach(function(key) {
+      var label = key === 'no-date' ? 'No Due Date' : key === today ? 'Today' : (function() {
+        var tom = new Date(); tom.setDate(tom.getDate()+1);
+        return key === tom.toISOString().split('T')[0] ? 'Tomorrow' : new Date(key+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      })();
+      var isOverdueGroup = key !== 'no-date' && key < today;
+      el.innerHTML += '<div style="font-size:11px;color:' + (isOverdueGroup ? 'var(--red)' : key === today ? 'var(--gold)' : 'var(--muted)') + ';font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em;margin:12px 0 6px;font-weight:600">' + (isOverdueGroup ? '⚠ ' : '') + label + '</div>';
+      groups[key].forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
+    });
+  } else {
+    pending.forEach(function(t) { el.innerHTML += renderTaskItem(t, today); });
+  }
+
+  // Completed section
+  if (done.length > 0) {
+    el.innerHTML += '<div style="margin-top:20px"><div class="sec-label">Completed (' + done.length + ')</div>';
+    done.sort(function(a,b) { return (b.completedDate||'').localeCompare(a.completedDate||''); }).slice(0,20).forEach(function(t) {
+      el.innerHTML += '<div class="del-item" style="opacity:0.6">'
+        + '<input type="checkbox" class="del-cb" checked onchange="toggleTask(\'' + t.id + '\', false)">'
+        + '<div class="del-item-info"><div class="del-item-label done">' + escHtml(t.title) + '</div>'
+        + '<div class="del-item-sub">' + (t.completedDate ? 'Done ' + new Date(t.completedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '') + '</div></div>'
+        + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px" onclick="deleteTask(\'' + t.id + '\')" title="Delete">✕</button>'
+        + '</div>';
+    });
+    el.innerHTML += '</div>';
+  }
+}
+
+function renderTaskItem(t, today) {
+  var isOverdue = t.dueDate && t.dueDate < today;
+  var dueLbl = t.dueDate ? new Date(t.dueDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+  var prIcon = t.priority === 'high' ? '🔴' : t.priority === 'low' ? '🟢' : '🟡';
+  return '<div class="del-item">'
+    + '<input type="checkbox" class="del-cb" onchange="toggleTask(\'' + t.id + '\', true)">'
+    + '<span style="font-size:12px;flex-shrink:0;cursor:pointer" onclick="cycleTaskPriority(\'' + t.id + '\')" title="Click to change priority">' + prIcon + '</span>'
+    + '<div class="del-item-info" style="cursor:pointer" onclick="openEditTask(\'' + t.id + '\')">'
+    + '  <div class="del-item-label">' + escHtml(t.title) + '</div>'
+    + '  <div class="del-item-sub">' + dueLbl + (t.notes ? ' · ' + escHtml(t.notes).substring(0,40) : '') + '</div>'
+    + '</div>'
+    + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px" onclick="openEditTask(\'' + t.id + '\')" title="Edit">✏</button>'
+    + '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px" onclick="deleteTask(\'' + t.id + '\')" title="Delete">✕</button>'
+    + '<span class="del-item-badge ' + (isOverdue ? 'overdue' : 'pending') + '">' + (isOverdue ? 'Overdue' : 'Pending') + '</span>'
+    + '</div>';
+}
+
+async function addTask() {
+  var title = document.getElementById('task-new-title').value.trim();
+  if (!title) { toast('Enter a task title'); return; }
+  var t = {
+    id: 'task_' + Date.now(), title: title,
+    dueDate: document.getElementById('task-new-date').value || '',
+    priority: document.getElementById('task-new-priority').value || 'medium',
+    status: 'pending', completedDate: '', notes: ''
+  };
+  try {
+    await apiCall('saveTask', t);
+    DATA.tasks.push(t);
+    document.getElementById('task-new-title').value = '';
+    document.getElementById('task-new-date').value = '';
+    toast('✓ Added: ' + title);
+  } catch(e) { toast('Save failed: ' + e.message); }
+  renderDeliverables();
+}
+
+async function toggleTask(taskId, checked) {
+  var t = (DATA.tasks||[]).find(function(x) { return x.id === taskId; });
+  if (!t) return;
+  t.status = checked ? 'done' : 'pending';
+  t.completedDate = checked ? new Date().toISOString().split('T')[0] : '';
+  try {
+    await apiCall('saveTask', t);
+    toast(checked ? '✓ ' + t.title + ' done' : t.title + ' reopened');
+  } catch(e) { toast('Save failed: ' + e.message); t.status = checked ? 'pending' : 'done'; }
+  renderDeliverables();
+}
+
+async function cycleTaskPriority(taskId) {
+  var t = (DATA.tasks||[]).find(function(x) { return x.id === taskId; });
+  if (!t) return;
+  var cycle = { high: 'medium', medium: 'low', low: 'high' };
+  t.priority = cycle[t.priority] || 'medium';
+  try { await apiCall('saveTask', t); } catch(e) { toast('Save failed: ' + e.message); }
+  renderDeliverables();
+}
+
+function openEditTask(taskId) {
+  var t = (DATA.tasks||[]).find(function(x) { return x.id === taskId; });
+  if (!t) return;
+  var ov = document.createElement('div');
+  ov.id = 'edit-task-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:100%">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--cream)">Edit Task</div><button onclick="document.getElementById(\'edit-task-overlay\').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button></div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Title</label><input class="field-input" id="etask-title" value="' + escHtml(t.title) + '"></div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+    + '  <div class="field"><label class="field-lbl">Due Date</label><input class="field-input" id="etask-due" type="date" value="' + (t.dueDate||'') + '"></div>'
+    + '  <div class="field"><label class="field-lbl">Priority</label><select class="field-input" id="etask-priority" style="cursor:pointer"><option value="high" ' + (t.priority==='high'?'selected':'') + '>🔴 High</option><option value="medium" ' + (t.priority==='medium'?'selected':'') + '>🟡 Medium</option><option value="low" ' + (t.priority==='low'?'selected':'') + '>🟢 Low</option></select></div>'
+    + '</div>'
+    + '<div class="field" style="margin-bottom:16px"><label class="field-lbl">Notes</label><input class="field-input" id="etask-notes" value="' + escHtml(t.notes||'') + '" placeholder="Optional notes"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-outline" onclick="document.getElementById(\'edit-task-overlay\').remove()">Cancel</button><button class="btn btn-gold" onclick="saveEditTask(\'' + taskId + '\')">Save</button></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(ev) { if (ev.target === ov) ov.remove(); });
+}
+
+async function saveEditTask(taskId) {
+  var t = (DATA.tasks||[]).find(function(x) { return x.id === taskId; });
+  if (!t) return;
+  t.title = document.getElementById('etask-title').value.trim() || t.title;
+  t.dueDate = document.getElementById('etask-due').value || '';
+  t.priority = document.getElementById('etask-priority').value || 'medium';
+  t.notes = document.getElementById('etask-notes').value.trim();
+  try { await apiCall('saveTask', t); toast('✓ Updated'); } catch(e) { toast('Save failed: ' + e.message); }
+  document.getElementById('edit-task-overlay').remove();
+  renderDeliverables();
+}
+
+async function deleteTask(taskId) {
+  var t = (DATA.tasks||[]).find(function(x) { return x.id === taskId; });
+  if (!t) return;
+  if (!confirm('Delete "' + t.title + '"?')) return;
+  try {
+    await apiCall('deleteTask', { id: taskId });
+    DATA.tasks = DATA.tasks.filter(function(x) { return x.id !== taskId; });
+    toast('Deleted');
+  } catch(e) { toast('Delete failed: ' + e.message); }
+  renderDeliverables();
 }
 
 function escHtml(str) {
