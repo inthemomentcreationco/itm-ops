@@ -1,4 +1,4 @@
-<!-- v10 -->
+<!-- v11 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -294,6 +294,27 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 .ytd-lbl{font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)}
 .ytd-val{font-family:'Cormorant',serif;font-size:22px;color:var(--gold)}
 .needs-1099{font-size:10px;color:var(--amber);font-family:'JetBrains Mono',monospace;margin-top:4px}
+/* Expandable team profiles */
+.contr-card.expandable .contr-hdr{cursor:pointer;transition:background 0.15s}
+.contr-card.expandable .contr-hdr:hover{background:var(--s2)}
+.contr-expand-chevron{transition:transform 0.2s;color:var(--muted);font-size:14px;flex-shrink:0}
+.contr-card.expanded .contr-expand-chevron{transform:rotate(180deg)}
+.contr-profile{display:none;border-top:1px solid var(--border);background:rgba(255,255,255,0.25)}
+.contr-card.expanded .contr-profile{display:block}
+.contr-profile-section{padding:14px 16px;border-bottom:1px solid var(--border)}
+.contr-profile-section:last-child{border-bottom:none}
+.contr-profile-title{font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.10em;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.contr-event-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px}
+.contr-event-row:last-child{border-bottom:none}
+.contr-del-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px}
+.contr-del-row:last-child{border-bottom:none}
+.contr-mini-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-top:6px}
+.contr-mini-cal .dow{text-align:center;font-size:8px;color:var(--muted2);text-transform:uppercase}
+.contr-mini-cal .day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:9px;color:var(--muted)}
+.contr-mini-cal .day.free{background:rgba(46,125,50,0.12);color:var(--green);font-weight:600}
+.contr-mini-cal .day.busy{background:rgba(198,40,40,0.12);color:var(--red);font-weight:600}
+.contr-mini-cal .day.today-d{outline:1.5px solid var(--gold);font-weight:700}
+.contr-card.expanded{grid-column:1/-1}
 
 /* Tables */
 .tbl-wrap{background:rgba(255,255,255,0.60);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px;box-shadow:0 1px 4px rgba(44,24,16,0.05)}
@@ -2549,30 +2570,211 @@ function buildAvailOverview() {
   return html;
 }
 
+var _expandedTeamId = null;
+function toggleTeamExpand(cId) {
+  _expandedTeamId = _expandedTeamId === cId ? null : cId;
+  renderContractors();
+}
+
+function buildTeamProfile(c) {
+  var todayStr = new Date().toISOString().split('T')[0];
+  var payments = DATA.payments || [];
+  var cPays = payments.filter(function(p){return p.contractorId===c.id;});
+  var year = new Date().getFullYear();
+
+  // ── EVENTS: upcoming + past ──
+  var assignedLive = (DATA.events||[]).filter(function(ev){
+    return (ev.contractorAssignments||[]).some(function(a){return a.contractorId===c.id;});
+  });
+  var upcomingEvts = assignedLive.filter(function(ev){return (ev.eventDate||'')>=todayStr;})
+    .sort(function(a,b){return (a.eventDate||'').localeCompare(b.eventDate||'');});
+  var pastLiveEvts = assignedLive.filter(function(ev){return (ev.eventDate||'')<todayStr;});
+
+  // Historical events where this person was contractor
+  var histEvts = (DATA.historicalEvents||[]).filter(function(r){
+    return r.contractorName===c.name || r.contractorName2===c.name;
+  });
+  var liveIds = new Set(assignedLive.map(function(e){return e.id;}));
+  var pastHistEvts = histEvts.filter(function(r){return !liveIds.has(r.id) && (r.date||'')<todayStr;});
+  var allPastEvts = pastLiveEvts.concat(pastHistEvts).sort(function(a,b){
+    return (b.eventDate||b.date||'').localeCompare(a.eventDate||a.date||'');
+  });
+
+  // ── DELIVERABLES ──
+  var allDel = (DATA.deliverables||[]).filter(function(d){return d.assignee===c.name;});
+  var pendingDel = allDel.filter(function(d){return d.status!=='done';});
+  var completedDel = allDel.filter(function(d){return d.status==='done';});
+
+  // ── PAY ──
+  var ytd = cPays.filter(function(p){return new Date(p.date).getFullYear()===year;}).reduce(function(s,p){return s+p.amount;},0);
+  var total = cPays.reduce(function(s,p){return s+p.amount;},0);
+  var paidEventIds = new Set(cPays.map(function(p){return p.eventId;}));
+  var unpaidEvents = assignedLive.filter(function(ev){return !paidEventIds.has(ev.id);});
+  var totalOwed = unpaidEvents.reduce(function(s,ev){
+    var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
+    var hrs = (a?a.hours:0) || ev.packageHours || 0;
+    var tShare = (a?a.travelShare:null); if(tShare==null) tShare=ev.travelFee||0;
+    return s + (hrs*100) + tShare;
+  },0);
+
+  // ── AVAILABILITY mini-calendar (next 30 days) ──
+  var avail = DATA.availability || [];
+  var calDays = [];
+  for (var i=0;i<30;i++){var dd=new Date();dd.setDate(dd.getDate()+i);calDays.push(dd.toISOString().split('T')[0]);}
+  var availMap = {};
+  avail.forEach(function(a){if(a.contractorId===c.id||a.name===c.name) availMap[a.date]=a.status;});
+  var freeCount = 0, busyCount = 0;
+  calDays.forEach(function(d){if(availMap[d]==='free') freeCount++; else if(availMap[d]==='busy') busyCount++;});
+
+  // Build HTML sections
+  var html = '';
+
+  // ── SECTION 1: Upcoming Events ──
+  html += '<div class="contr-profile-section">';
+  html += '<div class="contr-profile-title">📅 Upcoming Events (' + upcomingEvts.length + ')</div>';
+  if (upcomingEvts.length === 0) {
+    html += '<div style="font-size:11px;color:var(--muted);padding:4px 0">No upcoming events assigned</div>';
+  } else {
+    upcomingEvts.forEach(function(ev){
+      var evDate = ev.eventDate || '';
+      var dateLabel = evDate ? new Date(evDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+      html += '<div class="contr-event-row">'
+        + '<div><div style="font-weight:500">' + escHtml(ev.client||'—') + '</div>'
+        + '<div style="font-size:10px;color:var(--muted)">' + dateLabel + (ev.venue?' · '+escHtml(ev.venue):'') + '</div></div>'
+        + '<div style="font-size:10px;color:var(--gold);font-family:\'JetBrains Mono\',monospace">'
+        + (ev.package ? escHtml(ev.package) : '') + '</div></div>';
+    });
+  }
+  html += '</div>';
+
+  // ── SECTION 2: Past Events ──
+  html += '<div class="contr-profile-section">';
+  html += '<div class="contr-profile-title">📋 Past Events (' + allPastEvts.length + ')</div>';
+  if (allPastEvts.length === 0) {
+    html += '<div style="font-size:11px;color:var(--muted);padding:4px 0">No past events yet</div>';
+  } else {
+    var showPast = allPastEvts.slice(0,5);
+    showPast.forEach(function(ev){
+      var evDate = ev.eventDate || ev.date || '';
+      var dateLabel = evDate ? new Date(evDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+      var evClient = ev.client || '—';
+      html += '<div class="contr-event-row">'
+        + '<div><div style="font-weight:500">' + escHtml(evClient) + '</div>'
+        + '<div style="font-size:10px;color:var(--muted)">' + dateLabel + '</div></div></div>';
+    });
+    if (allPastEvts.length > 5) {
+      html += '<div style="font-size:10px;color:var(--muted);text-align:center;padding:4px 0">+ ' + (allPastEvts.length - 5) + ' more</div>';
+    }
+  }
+  html += '</div>';
+
+  // ── SECTION 3: Deliverables ──
+  html += '<div class="contr-profile-section">';
+  html += '<div class="contr-profile-title">🎬 Deliverables — ' + pendingDel.length + ' pending · ' + completedDel.length + ' done</div>';
+  if (pendingDel.length === 0 && completedDel.length === 0) {
+    html += '<div style="font-size:11px;color:var(--muted);padding:4px 0">No deliverables assigned</div>';
+  } else {
+    pendingDel.forEach(function(d){
+      var overdue = d.dueDate && d.dueDate < todayStr;
+      html += '<div class="contr-del-row">'
+        + '<div><span style="color:' + (overdue?'var(--red)':'var(--cream)') + '">' + escHtml(d.label||d.type) + '</span>'
+        + '<span style="font-size:9px;color:var(--muted);margin-left:6px">' + escHtml(d.client||'') + '</span></div>'
+        + '<div style="font-size:9px;color:' + (overdue?'var(--red)':'var(--muted)') + '">'
+        + (d.dueDate ? (overdue?'OVERDUE ':'due ') + new Date(d.dueDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'no due date')
+        + '</div></div>';
+    });
+    if (completedDel.length > 0) {
+      html += '<div style="font-size:10px;color:var(--green);padding:4px 0;margin-top:4px">✓ ' + completedDel.length + ' completed</div>';
+    }
+  }
+  html += '</div>';
+
+  // ── SECTION 4: Pay Summary ──
+  html += '<div class="contr-profile-section">';
+  html += '<div class="contr-profile-title">💰 Pay Summary</div>';
+  html += '<div style="display:flex;gap:12px;flex-wrap:wrap">';
+  html += '<div style="flex:1;min-width:80px;background:var(--goldbg);border-radius:7px;padding:8px 10px;border:1px solid var(--border2);text-align:center">'
+    + '<div style="font-family:\'JetBrains Mono\',monospace;font-size:8px;text-transform:uppercase;color:var(--muted)">YTD ' + year + '</div>'
+    + '<div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--gold)">$' + ytd.toLocaleString() + '</div>'
+    + (ytd>=600?'<div style="font-size:9px;color:var(--amber)">Needs 1099</div>':'')
+    + '</div>';
+  html += '<div style="flex:1;min-width:80px;background:var(--s2);border-radius:7px;padding:8px 10px;border:1px solid var(--border);text-align:center">'
+    + '<div style="font-family:\'JetBrains Mono\',monospace;font-size:8px;text-transform:uppercase;color:var(--muted)">All-time</div>'
+    + '<div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--cream)">$' + total.toLocaleString() + '</div></div>';
+  if (totalOwed > 0) {
+    html += '<div style="flex:1;min-width:80px;background:rgba(198,40,40,0.06);border-radius:7px;padding:8px 10px;border:1px solid rgba(198,40,40,0.15);text-align:center">'
+      + '<div style="font-family:\'JetBrains Mono\',monospace;font-size:8px;text-transform:uppercase;color:var(--red)">Owed</div>'
+      + '<div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--red)">$' + totalOwed.toLocaleString() + '</div></div>';
+  }
+  html += '</div>';
+  if (unpaidEvents.length > 0) {
+    html += '<div style="margin-top:8px">';
+    unpaidEvents.forEach(function(ev){
+      var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
+      var hrs = (a?a.hours:0)||ev.packageHours||0;
+      var tShare = (a?a.travelShare:null); if(tShare==null) tShare=ev.travelFee||0;
+      var evPay = (hrs*100)+tShare;
+      html += '<div class="contr-event-row" style="font-size:11px">'
+        + '<span>' + escHtml(ev.client||'—') + '</span>'
+        + '<span style="color:var(--gold);font-family:\'JetBrains Mono\',monospace">$' + evPay.toLocaleString() + '</span></div>';
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // ── SECTION 5: Availability (mini calendar) ──
+  html += '<div class="contr-profile-section">';
+  html += '<div class="contr-profile-title">🗓 Availability — Next 30 Days'
+    + '<span style="margin-left:auto;font-size:10px;font-family:\'Outfit\',sans-serif;text-transform:none;letter-spacing:0">'
+    + '<span style="color:var(--green)">' + freeCount + ' free</span>'
+    + ' · <span style="color:var(--red)">' + busyCount + ' busy</span></span></div>';
+  html += '<div class="contr-mini-cal">';
+  var dowLabels = ['S','M','T','W','T','F','S'];
+  dowLabels.forEach(function(d){html += '<div class="dow">' + d + '</div>';});
+  // Pad to start on correct day of week
+  var firstDow = new Date(calDays[0]+'T12:00:00').getDay();
+  for (var p=0;p<firstDow;p++) html += '<div class="day"></div>';
+  calDays.forEach(function(dateStr){
+    var dd = new Date(dateStr+'T12:00:00');
+    var cls = 'day';
+    if (availMap[dateStr]==='free') cls += ' free';
+    else if (availMap[dateStr]==='busy') cls += ' busy';
+    if (dateStr===todayStr) cls += ' today-d';
+    html += '<div class="' + cls + '">' + dd.getDate() + '</div>';
+  });
+  html += '</div></div>';
+
+  return html;
+}
+
 function renderContractors() {
   const payments = DATA.payments || [];
   const year = new Date().getFullYear();
+  var todayStr = new Date().toISOString().split('T')[0];
 
-  // Build availability overview for next 60 days
+  // Build availability overview for next 45 days
   var availHtml = buildAvailOverview();
 
   document.getElementById('contractors-content').innerHTML = availHtml + `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
-      <div class="sec-label" style="margin:0">Team & Payments</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px">
+      <div class="sec-label" style="margin:0">Team Members</div>
       <button class="btn btn-gold" onclick="openPayModal()">+ Log Payment</button>
     </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">Tap a card to see full profile: events, deliverables, pay, and availability</div>
     <div class="contractor-grid">
       ${DATA.contractors.map(c=>{
         const cPays    = payments.filter(p=>p.contractorId===c.id);
         const ytd      = cPays.filter(p=>new Date(p.date).getFullYear()===year).reduce((s,p)=>s+p.amount,0);
         const total    = cPays.reduce((s,p)=>s+p.amount,0);
         const needs1099 = ytd >= 600;
+        const isExpanded = _expandedTeamId === c.id;
 
         // Find assigned unpaid events for this contractor
         const paidEventIds = new Set(cPays.map(p=>p.eventId));
         const assignedEvents = (DATA.events||[]).filter(ev=>
           (ev.contractorAssignments||[]).some(a=>a.contractorId===c.id)
         );
+        const upcomingCount = assignedEvents.filter(ev=>(ev.eventDate||'')>=todayStr).length;
         const unpaidEvents = assignedEvents.filter(ev=>!paidEventIds.has(ev.id));
         const totalOwed = unpaidEvents.reduce((s,ev)=>{
           const a = (ev.contractorAssignments||[]).find(x=>x.contractorId===c.id);
@@ -2581,35 +2783,34 @@ function renderContractors() {
           return s + (hrs*100) + tShare;
         },0);
 
-        return `<div class="contr-card">
-          <div class="contr-hdr">
-            <div class="contr-avatar">${c.name[0]}</div>
-            <div style="flex:1"><div class="contr-name">${c.name}</div><div class="contr-role">${c.role}</div></div>
-            <button class="btn btn-outline" style="padding:5px 12px;font-size:11px;flex-shrink:0" onclick="openPayModal('${c.id}')">Pay</button>
-          </div>
-          <div class="contr-body">
-            <div class="contr-stat"><span class="contr-stat-lbl">Events assigned</span><span class="contr-stat-val">${assignedEvents.length}</span></div>
-            <div class="contr-stat"><span class="contr-stat-lbl">Payments logged</span><span class="contr-stat-val">${cPays.length}</span></div>
-            <div class="contr-stat"><span class="contr-stat-lbl">All-time paid</span><span class="contr-stat-val">$${total.toLocaleString()}</span></div>
-            ${unpaidEvents.length>0?`<div class="contr-stat"><span class="contr-stat-lbl" style="color:var(--amber)">Owed (unpaid)</span><span class="contr-stat-val" style="color:var(--amber)">$${totalOwed.toLocaleString()}</span></div>`:''}
-            <div class="ytd-box">
-              <div><div class="ytd-lbl">YTD ${year}</div><div class="ytd-val">$${ytd.toLocaleString()}</div></div>
-              ${needs1099?'<div class="needs-1099">⚠️ Needs 1099</div>':''}
-            </div>
-            ${unpaidEvents.length>0?`
-            <div style="margin-top:10px">
-              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:6px">Unpaid Events</div>
-              ${unpaidEvents.map(ev=>`
-              <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
-                <span>${ev.client}</span>
-                <span style="color:var(--gold);font-family:'JetBrains Mono',monospace;font-size:11px">
-                  ${(()=>{const a=(ev.contractorAssignments||[]).find(x=>x.contractorId===c.id);const hrs=a?.hours||ev.packageHours;const t=a?.travelShare??ev.travelFee??0;return '$'+((hrs*100)+t).toLocaleString();})()}
-                </span>
-              </div>`).join('')}
-            </div>`:
-            cPays.length===0?'<div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center">No events assigned yet</div>':''}
-          </div>
-        </div>`;
+        // Deliverables count
+        const myDel = (DATA.deliverables||[]).filter(d=>d.assignee===c.name);
+        const pendingDel = myDel.filter(d=>d.status!=='done').length;
+
+        // Quick-glance badges for collapsed view
+        var badges = '';
+        if (upcomingCount>0) badges += '<span style="font-size:9px;background:var(--goldbg);color:var(--gold);padding:2px 6px;border-radius:4px;border:1px solid var(--border2)">' + upcomingCount + ' upcoming</span> ';
+        if (pendingDel>0) badges += '<span style="font-size:9px;background:rgba(198,40,40,0.06);color:var(--red);padding:2px 6px;border-radius:4px;border:1px solid rgba(198,40,40,0.1)">' + pendingDel + ' due</span> ';
+        if (totalOwed>0) badges += '<span style="font-size:9px;background:rgba(183,153,60,0.08);color:var(--amber);padding:2px 6px;border-radius:4px;border:1px solid rgba(183,153,60,0.15)">$' + totalOwed.toLocaleString() + ' owed</span>';
+
+        return '<div class="contr-card expandable' + (isExpanded?' expanded':'') + '">'
+          + '<div class="contr-hdr" onclick="toggleTeamExpand(\x27' + c.id + '\x27)">'
+          + '<div class="contr-avatar">' + c.name[0] + '</div>'
+          + '<div style="flex:1"><div class="contr-name">' + escHtml(c.name) + '</div><div class="contr-role">' + escHtml(c.role) + '</div>'
+          + (badges && !isExpanded ? '<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">' + badges + '</div>' : '')
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:8px">'
+          + '<button class="btn btn-outline" style="padding:5px 12px;font-size:11px;flex-shrink:0" onclick="event.stopPropagation();openPayModal(\x27' + c.id + '\x27)">Pay</button>'
+          + '<div class="contr-expand-chevron">▼</div></div></div>'
+          + '<div class="contr-body" onclick="toggleTeamExpand(\x27' + c.id + '\x27)" style="cursor:pointer">'
+          + '<div style="display:flex;gap:16px;flex-wrap:wrap">'
+          + '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--cream)">' + assignedEvents.length + '</div><div style="font-size:9px;color:var(--muted)">Events</div></div>'
+          + '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--gold)">$' + ytd.toLocaleString() + '</div><div style="font-size:9px;color:var(--muted)">YTD</div></div>'
+          + (totalOwed>0 ? '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--amber)">$' + totalOwed.toLocaleString() + '</div><div style="font-size:9px;color:var(--muted)">Owed</div></div>' : '')
+          + (needs1099 ? '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:14px">⚠️</div><div style="font-size:9px;color:var(--amber)">1099</div></div>' : '')
+          + '</div></div>'
+          + '<div class="contr-profile">' + (isExpanded ? buildTeamProfile(c) : '') + '</div>'
+          + '</div>';
       }).join('')}
     </div>
 
