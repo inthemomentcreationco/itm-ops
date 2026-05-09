@@ -1168,7 +1168,7 @@ async function syncData() {
         source:        String(r.source||'honeybook'),
         notes:         String(r.notes||''),
         hbFees:        parseFloat(r.hbFees)||0,
-        deposit:       parseFloat(r.deposit)||0,
+        deposit:       parseFloat(r.deposit) || ((parseFloat(r.grossAmount)||0) - (parseFloat(r.balanceDue)||0)) || 0,
         planningCall:  r.planningCall,
         deliverables:  r.deliverables||'',
       }));
@@ -1595,6 +1595,7 @@ function score(inq) {
 
   inq._scored    = true;
   inq._score     = Math.min(100, total);
+  inq._stars     = scoreToStars(total);
   inq._criteria  = criteria;
   inq._travel    = travel;
   inq._myPrice   = myPrice;
@@ -1605,6 +1606,32 @@ function score(inq) {
   inq._conflict  = avail?.severity==='conflict' || avail?.laurenBooked || false;
   inq._avail     = avail;
   inq._noPlanner = isWedding && noPlanner;
+}
+
+function scoreToStars(pts) {
+  if (pts >= 80) return 5;
+  if (pts >= 65) return 4;
+  if (pts >= 50) return 3;
+  if (pts >= 30) return 2;
+  return 1;
+}
+
+function renderStars(count, max) {
+  max = max || 5;
+  var html = '';
+  for (var i = 1; i <= max; i++) {
+    html += '<span style="font-size:16px;color:' + (i <= count ? 'var(--gold)' : 'var(--border2)') + '">' + (i <= count ? '★' : '☆') + '</span>';
+  }
+  return html;
+}
+
+function starVerdict(stars, hasFail) {
+  if (hasFail) return 'Auto-Decline';
+  if (stars >= 5) return 'Book This';
+  if (stars >= 4) return 'Strong Lead';
+  if (stars >= 3) return 'Ask Questions';
+  if (stars >= 2) return 'Low Priority';
+  return 'Poor Fit';
 }
 
 // ════════════════════════════════ EMAIL GENERATOR ════════════════════════════════
@@ -2016,11 +2043,9 @@ function inqCard(inq, clickable=true) {
       ${tags.length?`<div class="inq-tags">${tags.join('')}</div>`:''}
     </div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
-      <div class="inq-score">
-        <div class="score-circle ${inq._hardFails?.length?'fail':scoreClass}">
-          ${inq._hardFails?.length?'⛔':s}
-        </div>
-        <div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:right">/100</div>
+      <div class="inq-score" style="text-align:right">
+        ${inq._hardFails?.length ? '<div style="font-size:22px">⛔</div>' : '<div>' + renderStars(inq._stars || 0) + '</div>'}
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${inq._hardFails?.length ? 'Auto-Decline' : starVerdict(inq._stars||0)}</div>
       </div>
       ${inq.stage==='new' ? `<button onclick="markResponded('${inq.id}',event)" style="font-size:10px;padding:4px 8px;background:var(--s3);border:1px solid var(--border2);border-radius:6px;color:var(--muted2);cursor:pointer;white-space:nowrap" title="Mark as responded">✓ Responded</button>` : `<span style="font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--muted);text-transform:uppercase">${inq.stage}</span>`}
     </div>
@@ -2033,9 +2058,10 @@ function openDetail(id) {
   if (!inq) return;
   currentInquiry = inq;
   const s = inq._score || 0;
-  const scoreColor = inq._hardFails?.length?'var(--red)':s>=75?'var(--green)':s>=50?'var(--amber)':'var(--red)';
+  const stars = inq._stars || scoreToStars(s);
+  const scoreColor = inq._hardFails?.length?'var(--red)':stars>=4?'var(--green)':stars>=3?'var(--amber)':'var(--red)';
   const hasFail = inq._hardFails?.length > 0;
-  const verdict = hasFail?'Auto-Decline':s>=75?'Pursue This':s>=50?'Ask Questions First':'Low Priority';
+  const verdict = starVerdict(stars, hasFail);
   const travel = inq._travel || {};
   const email = generateEmail(inq);
   const pkg = inq.package || 'Package not specified';
@@ -2065,11 +2091,9 @@ function openDetail(id) {
     </div>`:''}
 
     <div class="score-display">
-      <div class="score-big" style="--sc:${scoreColor};--sp:${s}">
-        <div class="score-big-inner">
-          <div class="score-big-num" style="color:${scoreColor}">${hasFail?'⛔':s}</div>
-          <div class="score-big-max">/ 100</div>
-        </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:100px">
+        ${hasFail ? '<div style="font-size:36px">⛔</div>' : '<div style="font-size:22px;letter-spacing:2px">' + renderStars(stars) + '</div>'}
+        <div style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace">${s}/100 pts</div>
       </div>
       <div>
         <div class="score-verdict" style="color:${scoreColor}">${verdict}</div>
@@ -3103,11 +3127,19 @@ function openFinEdit(id) {
       <div style="margin-bottom:16px">
         <label class="field-lbl">Package</label>
         <select class="field-input" id="fe-package">
-          <option value="" ${!r.package?'selected':''}>— Select package —</option>
-          <option value="Just a Little Sumthin'" ${r.package==="Just a Little Sumthin'"?'selected':''}>Just a Little Sumthin' (2 reels)</option>
-          <option value="Happy Medium" ${r.package==='Happy Medium'?'selected':''}>Happy Medium (3 reels)</option>
-          <option value="Full-On Paparazzi" ${r.package==='Full-On Paparazzi'?'selected':''}>Full-On Paparazzi (4 reels)</option>
-          <option value="Custom" ${r.package==='Custom'?'selected':''}>Custom</option>
+          ${(function(){
+            var pkgVal = (r.package||'').toLowerCase();
+            var opts = [
+              {v:"Just a Little Sumthin'", l:"Just a Little Sumthin' (2 reels)", k:'sumthin'},
+              {v:'Happy Medium', l:'Happy Medium (3 reels)', k:'happy medium'},
+              {v:'Full-On Paparazzi', l:'Full-On Paparazzi (4 reels)', k:'paparazzi'},
+              {v:'Custom', l:'Custom', k:'custom'}
+            ];
+            var matched = opts.find(function(o){ return pkgVal === o.v.toLowerCase() || pkgVal.indexOf(o.k) >= 0; });
+            var html = '<option value=""' + (!matched ? ' selected' : '') + '>-- Select package --</option>';
+            opts.forEach(function(o){ html += '<option value="' + o.v.replace(/"/g,'&quot;') + '"' + (matched && matched.v === o.v ? ' selected' : '') + '>' + o.l + '</option>'; });
+            return html;
+          })()}
         </select>
       </div>
 
@@ -3201,6 +3233,7 @@ async function saveFinEdit(id) {
     client:    hist?.client || live?.client || '',
     eventType: hist?.eventType || live?.eventType || '',
     package:   pkg || hist?.package || live?.package || '',
+    packageHours: hist?.packageHours || '',
     deposit,
     balanceDue,
     paid,
@@ -5140,7 +5173,12 @@ async function ensureGcalToken() {
       return true;
     }
   } catch(e) {
-    // No refresh token stored yet — need user to connect once
+    console.warn('Calendar token refresh failed:', e.message);
+    // Clear stale tokens so user sees connect prompt
+    gcalToken = null;
+    gcalExpiry = 0;
+    localStorage.removeItem('gcal_token');
+    localStorage.removeItem('gcal_token_expiry');
   }
   return false;
 }
@@ -5164,6 +5202,8 @@ function connectGoogleCalendar() {
         client_id: GCAL_CLIENT_ID,
         scope: GCAL_SCOPES,
         ux_mode: 'popup',
+        access_type: 'offline',
+        prompt: 'consent',
         callback: async (resp) => {
           if (resp.error) { toast('Calendar auth failed: ' + resp.error); return; }
           // Send the code to Apps Script to exchange for tokens + store refresh token
@@ -5914,7 +5954,11 @@ async function loadGmail() {
     GMAIL_STATE.threads = threads || [];
     renderGmailList();
   } catch(e) {
-    listEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><div class="empty-msg">${e.message}</div></div>`;
+    var errMsg = e.message || 'Unknown error';
+    var isAuth = errMsg.toLowerCase().indexOf('auth') >= 0 || errMsg.toLowerCase().indexOf('permission') >= 0 || errMsg.toLowerCase().indexOf('unauth') >= 0;
+    listEl.innerHTML = '<div class="empty"><div class="empty-icon">' + (isAuth ? '🔒' : '⚠') + '</div><div class="empty-msg">' + escHtml(errMsg)
+      + (isAuth ? '<br><br><div style="font-size:12px;color:var(--muted)">Gmail permissions may have expired. Go to Apps Script and re-run any function (like getFinancials) to re-authorize, then reload.</div>' : '')
+      + '<br><br><button class="btn btn-outline" onclick="loadGmail()" style="margin-top:8px">Try Again</button></div></div>';
   }
 }
 
@@ -5967,15 +6011,37 @@ function renderGmailDetail(thread) {
   // Store thread data globally so onclick handlers can access it cleanly
   GMAIL_STATE.currentThread = { thread, replyTo, replySubject };
 
-  const msgHtml = messages.map(m => `
-    <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:10px;padding:16px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:4px">
-        <div style="font-size:12px;color:var(--gold)">${escHtml(m.from)}</div>
-        <div style="font-size:11px;color:var(--muted)">${m.date}</div>
-      </div>
-      <div style="font-size:13px;color:var(--cream);line-height:1.7;white-space:pre-wrap">${escHtml(m.body)}</div>
-    </div>
-  `).join('');
+  var laurenEmail = 'inthemomentcreationco@gmail.com';
+  const msgHtml = messages.map(function(m, idx) {
+    var fromStr = escHtml(m.from || '');
+    var toStr = escHtml(m.to || '');
+    var isLauren = (m.from || '').toLowerCase().indexOf(laurenEmail) >= 0 || (m.from || '').toLowerCase().indexOf('lauren') >= 0;
+    var senderName = fromStr.split('<')[0].trim() || fromStr;
+    var recipientName = toStr.split('<')[0].trim() || toStr;
+    var borderColor = isLauren ? 'var(--gold)' : 'var(--border2)';
+    var bgColor = isLauren ? 'rgba(139,26,26,0.06)' : 'rgba(255,255,255,0.04)';
+    var senderLabel = isLauren ? '↗ Lauren (You)' : '↙ ' + senderName;
+    var senderColor = isLauren ? 'var(--gold)' : 'var(--cream)';
+    // Strip quoted reply text (lines starting with >)
+    var bodyText = (m.body || '').replace(/^(>.*\n?)+/gm, '').replace(/On .+ wrote:\s*$/gm, '').trim();
+    var isCollapsed = idx < messages.length - 1 && messages.length > 3;
+    return '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';border-radius:10px;padding:' + (isCollapsed ? '10px 16px' : '16px') + ';border-left:3px solid ' + borderColor + '">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer" onclick="var b=this.nextElementSibling;b.style.display=b.style.display===\'none\'?\'block\':\'none\'">'
+      + '  <div style="display:flex;align-items:center;gap:8px">'
+      + '    <div style="width:28px;height:28px;border-radius:50%;background:' + (isLauren ? 'var(--gold)' : 'var(--s3)') + ';display:flex;align-items:center;justify-content:center;font-size:11px;color:' + (isLauren ? '#fff' : 'var(--cream)') + ';font-weight:600;flex-shrink:0">' + (senderName.charAt(0) || '?').toUpperCase() + '</div>'
+      + '    <div>'
+      + '      <div style="font-size:12px;font-weight:600;color:' + senderColor + '">' + senderLabel + '</div>'
+      + '      <div style="font-size:10px;color:var(--muted)">to ' + recipientName + '</div>'
+      + '    </div>'
+      + '  </div>'
+      + '  <div style="font-size:10px;color:var(--muted);white-space:nowrap;flex-shrink:0">' + escHtml(m.date || '') + '</div>'
+      + '</div>'
+      + '<div style="' + (isCollapsed ? 'display:none;' : '') + 'margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+      + '  <div style="font-size:12px;color:var(--cream);line-height:1.8;white-space:pre-wrap">' + escHtml(bodyText) + '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+
 
   detailEl.innerHTML = `
     <div>
