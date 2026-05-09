@@ -792,6 +792,8 @@ let DATA = {
     { id:'c2', name:'Bianca Young', role:'Shooter', isOwner:false },
     { id:'c3', name:'Lilly Economus', role:'Shooter / Editor', isOwner:false },
     { id:'c4', name:'Roshni Lewis', role:'Shooter', isOwner:false },
+    { id:'c5', name:'Cece Economus', role:'Shooter', isOwner:false },
+    { id:'c6', name:'Jasmine Marquez', role:'Shooter', isOwner:false },
   ],
 };
 
@@ -2473,11 +2475,87 @@ async function bookInquiry(id) {
 }
 
 // ════════════════════════════════ CONTRACTORS ════════════════════════════════
+function buildAvailOverview() {
+  var today = new Date();
+  var todayStr = today.toISOString().split('T')[0];
+  var avail = DATA.availability || [];
+  var team = DATA.contractors || [];
+
+  // Build next 45 days
+  var days = [];
+  for (var i = 0; i < 45; i++) {
+    var d = new Date(today);
+    d.setDate(d.getDate() + i);
+    days.push(d.toISOString().split('T')[0]);
+  }
+
+  // Header row with dates
+  var html = '<div style="margin-bottom:24px">'
+    + '<div class="sec-label" style="margin-bottom:12px">Team Availability — Next 45 Days</div>'
+    + '<div style="overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--s2)">'
+    + '<table style="border-collapse:collapse;width:100%;min-width:' + (120 + days.length * 36) + 'px">'
+    + '<thead><tr><th style="position:sticky;left:0;background:var(--s2);z-index:2;padding:8px 12px;text-align:left;font-size:11px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;border-bottom:1px solid var(--border);min-width:120px">Team Member</th>';
+
+  days.forEach(function(dateStr) {
+    var d = new Date(dateStr + 'T12:00:00');
+    var dayNum = d.getDate();
+    var dow = d.toLocaleDateString('en-US', { weekday: 'narrow' });
+    var isWeekend = d.getDay() === 0 || d.getDay() === 6;
+    var isToday = dateStr === todayStr;
+    var monthLabel = dayNum === 1 || dateStr === days[0] ? d.toLocaleDateString('en-US', { month: 'short' }) + ' ' : '';
+    html += '<th style="padding:4px 2px;text-align:center;font-size:9px;color:' + (isToday ? 'var(--gold)' : isWeekend ? 'var(--muted2)' : 'var(--muted)') + ';font-weight:' + (isToday ? '700' : '400') + ';border-bottom:1px solid var(--border);min-width:32px;font-family:\'JetBrains Mono\',monospace">'
+      + '<div style="font-size:8px;line-height:1">' + monthLabel + '</div>'
+      + '<div>' + dayNum + '</div>'
+      + '<div style="font-size:7px;opacity:0.7">' + dow + '</div></th>';
+  });
+  html += '</tr></thead><tbody>';
+
+  // One row per team member
+  team.forEach(function(c) {
+    html += '<tr><td style="position:sticky;left:0;background:var(--s2);z-index:2;padding:6px 12px;border-bottom:1px solid var(--border);white-space:nowrap">'
+      + '<div style="display:flex;align-items:center;gap:8px">'
+      + '<div style="width:24px;height:24px;border-radius:50%;background:' + (c.isOwner ? 'var(--gold)' : 'var(--s3)') + ';display:flex;align-items:center;justify-content:center;font-size:10px;color:' + (c.isOwner ? '#fff' : 'var(--cream)') + ';font-weight:600;flex-shrink:0">' + (c.name || '?').charAt(0) + '</div>'
+      + '<div><div style="font-size:12px;color:var(--cream);font-weight:500">' + escHtml(c.name.split(' ')[0]) + '</div>'
+      + '<div style="font-size:9px;color:var(--muted)">' + escHtml(c.role) + '</div></div>'
+      + '</div></td>';
+
+    days.forEach(function(dateStr) {
+      var entry = avail.filter(function(a) { return (a.contractorId === c.id || a.name === c.name) && a.date === dateStr; })
+        .sort(function(a, b) { return (b.submittedAt || '').localeCompare(a.submittedAt || ''); })[0];
+      var status = entry ? entry.status : '';
+      var bg = 'transparent';
+      var icon = '';
+      if (status === 'free') { bg = 'rgba(46,125,50,0.15)'; icon = '✓'; }
+      else if (status === 'busy') { bg = 'rgba(198,40,40,0.15)'; icon = '✕'; }
+      var d = new Date(dateStr + 'T12:00:00');
+      var isWeekend = d.getDay() === 0 || d.getDay() === 6;
+      html += '<td style="padding:2px;text-align:center;border-bottom:1px solid var(--border);background:' + (isWeekend && !status ? 'rgba(0,0,0,0.03)' : bg) + '">'
+        + '<div style="font-size:11px;color:' + (status === 'free' ? 'var(--green)' : status === 'busy' ? 'var(--red)' : 'var(--border2)') + '">' + (icon || '·') + '</div></td>';
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+
+  // Legend
+  html += '<div style="display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--muted);align-items:center;flex-wrap:wrap">'
+    + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--green)">✓</span> Available</div>'
+    + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--red)">✕</span> Unavailable</div>'
+    + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--border2)">·</span> Not submitted</div>'
+    + '<div style="margin-left:auto;font-size:10px;color:var(--muted2)">Scroll right for more dates →</div>'
+    + '</div></div>';
+
+  return html;
+}
+
 function renderContractors() {
   const payments = DATA.payments || [];
   const year = new Date().getFullYear();
 
-  document.getElementById('contractors-content').innerHTML = `
+  // Build availability overview for next 60 days
+  var availHtml = buildAvailOverview();
+
+  document.getElementById('contractors-content').innerHTML = availHtml + `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
       <div class="sec-label" style="margin:0">Team & Payments</div>
       <button class="btn btn-gold" onclick="openPayModal()">+ Log Payment</button>
