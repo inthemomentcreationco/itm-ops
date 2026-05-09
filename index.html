@@ -788,10 +788,10 @@ let DATA = {
   deliverables: [],
   tasks: [],
   contractors:  [
-    { id:'c1', name:'Lauren Nava', role:'Owner / Shooter' },
-    { id:'c2', name:'Bianca Young', role:'Shooter' },
-    { id:'c3', name:'Lilly Economus', role:'Shooter / Editor' },
-    { id:'c4', name:'Roshni Lewis', role:'Shooter' },
+    { id:'c1', name:'Lauren Nava', role:'Owner / Shooter', isOwner:true },
+    { id:'c2', name:'Bianca Young', role:'Shooter', isOwner:false },
+    { id:'c3', name:'Lilly Economus', role:'Shooter / Editor', isOwner:false },
+    { id:'c4', name:'Roshni Lewis', role:'Shooter', isOwner:false },
   ],
 };
 
@@ -1078,16 +1078,17 @@ async function syncData() {
           }));
       });
 
-      // Load availability (same format as before)
+      // Load availability — supports both old format (Contractor Name) and new (contractorId/name)
       const availRows = availability || [];
       if (availRows.length) {
         const latestMap = {};
         availRows.forEach(r => {
           const entry = {
-            submittedAt: r['Submitted At'] || r.submittedAt || '',
-            name:        r['Contractor Name'] || r.name || '',
-            date:        r['Date'] || r.date || '',
-            status:      r['Status'] || r.status || '',
+            submittedAt: r.submittedAt || r['Submitted At'] || '',
+            name:        r.name || r['Contractor Name'] || '',
+            contractorId: r.contractorId || '',
+            date:        r.date || r['Date'] || '',
+            status:      r.status || r['Status'] || '',
           };
           if (!entry.name || !entry.date) return;
           const key = `${entry.name}|${entry.date}`;
@@ -1418,21 +1419,24 @@ function getAvailabilityForDate(dateStr) {
 
   // Check each contractor's status for this date
   const teamStatus = DATA.contractors.map(c => {
-    // Find the most recent entry for this person on this date
+    // Find the most recent entry for this person on this date (match by id or name)
     const entry = DATA.availability
-      .filter(a => a.name === c.name && normalizeDate(a.date) === d)
-      .sort((a,b) => b.submittedAt.localeCompare(a.submittedAt))[0];
+      .filter(a => (a.contractorId === c.id || a.name === c.name) && normalizeDate(a.date) === d)
+      .sort((a,b) => (b.submittedAt||'').localeCompare(a.submittedAt||''))[0];
 
-    // Also check if contractor is already booked on an event in DATA.events
+    // Also check if contractor is already booked on an event
     const bookedOnEvent = DATA.events.some(ev =>
-      normalizeDate(ev.eventDate) === d && ev.contractor === c.name
+      normalizeDate(ev.eventDate) === d && (ev.contractor === c.name || (ev.contractorAssignments||[]).some(a => a.contractorId === c.id || a.contractorName === c.name))
     );
 
+    // For Lauren, also check Google Calendar
+    const isLaurenCalBooked = c.isOwner && laurenBooked;
+
     let status;
-    if (bookedOnEvent)          status = 'booked';       // confirmed on another event
-    else if (!entry)            status = 'unknown';      // hasn't submitted availability
-    else if (entry.status === 'free')  status = 'free';  // said they're free
-    else                        status = 'busy';         // said they're busy
+    if (bookedOnEvent || isLaurenCalBooked) status = 'booked';
+    else if (!entry)                        status = 'unknown';
+    else if (entry.status === 'free')       status = 'free';
+    else                                    status = 'busy';
 
     return { ...c, status, submittedAt: entry?.submittedAt };
   });
@@ -1442,20 +1446,40 @@ function getAvailabilityForDate(dateStr) {
   const bookedContractors  = teamStatus.filter(c => c.status === 'booked');
   const unknownContractors = teamStatus.filter(c => c.status === 'unknown');
 
+  // Separate Lauren from contractors in status
+  var laurenStatus = teamStatus.find(function(c) { return c.isOwner; });
+  var contractorFree = freeContractors.filter(function(c) { return !c.isOwner; });
+  var contractorBusy = busyContractors.filter(function(c) { return !c.isOwner; });
+  var contractorUnknown = unknownContractors.filter(function(c) { return !c.isOwner; });
+
   // Availability verdict
   let verdict, severity;
-  if (laurenBooked) {
-    verdict  = `You are already booked on this date`;
-    severity = 'conflict';
-  } else if (freeContractors.length === 0 && unknownContractors.length === 0) {
-    verdict  = `No team members available — everyone is busy or booked`;
-    severity = 'conflict';
-  } else if (freeContractors.length === 0 && unknownContractors.length > 0) {
-    verdict  = `${unknownContractors.length} team member(s) haven't submitted availability yet`;
+  var laurenFree = laurenStatus && laurenStatus.status === 'free';
+  var laurenBusyOrBooked = laurenStatus && (laurenStatus.status === 'busy' || laurenStatus.status === 'booked');
+
+  if (laurenBooked || laurenBusyOrBooked) {
+    if (contractorFree.length > 0) {
+      verdict = 'Lauren unavailable — ' + contractorFree.map(function(c) { return c.name.split(' ')[0]; }).join(', ') + ' free';
+      severity = 'ok';
+    } else if (contractorUnknown.length > 0) {
+      verdict = 'Lauren unavailable — ' + contractorUnknown.length + ' team member(s) haven\'t submitted availability';
+      severity = 'unknown';
+    } else {
+      verdict = 'No one available — Lauren and all team members busy/booked';
+      severity = 'conflict';
+    }
+  } else if (contractorFree.length > 0) {
+    verdict = (laurenFree ? 'Lauren + ' : '') + contractorFree.map(function(c) { return c.name.split(' ')[0]; }).join(', ') + ' available';
+    severity = 'ok';
+  } else if (laurenFree) {
+    verdict = 'Lauren available — no contractors free' + (contractorUnknown.length > 0 ? ' (' + contractorUnknown.length + ' unknown)' : '');
+    severity = contractorUnknown.length > 0 ? 'unknown' : 'ok';
+  } else if (unknownContractors.length > 0) {
+    verdict = unknownContractors.length + ' team member(s) haven\'t submitted availability yet';
     severity = 'unknown';
   } else {
-    verdict  = `${freeContractors.length} team member(s) available`;
-    severity = 'ok';
+    verdict = 'No team members available — everyone is busy or booked';
+    severity = 'conflict';
   }
 
   return {
