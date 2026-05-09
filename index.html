@@ -2570,6 +2570,54 @@ function buildAvailOverview() {
   return html;
 }
 
+// ── Unified pay data: merges ITM_Payments sheet + localStorage paidLog from Financials ──
+function getUnifiedPay(c) {
+  var payments = DATA.payments || [];
+  var cPays = payments.filter(function(p){return p.contractorId===c.id;});
+  var paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+  var noCharge = JSON.parse(localStorage.getItem('itm_pay_overrides') || '{}');
+  // Also gather payments from the Financials "mark paid" log for this contractor
+  var hist = DATA.historicalEvents || [];
+  var logPays = [];
+  var logPaidEventIds = new Set();
+  var sheetEventIds = new Set(cPays.map(function(p){return p.eventId;}));
+  hist.forEach(function(r){
+    // Contractor slot 1
+    if (r.contractorName === c.name && (parseFloat(r.contractorPay)||0) > 0) {
+      var key = r.id + '_1';
+      if ((paidLog[key] || noCharge[key]) && !sheetEventIds.has(r.id)) {
+        var entry = paidLog[key] || noCharge[key];
+        logPays.push({
+          amount: parseFloat(r.contractorPay)||0,
+          date: entry.date || r.date || '',
+          method: entry.method || 'Unknown',
+          eventId: r.id,
+          client: r.client || '',
+          source: 'log'
+        });
+        logPaidEventIds.add(r.id);
+      }
+    }
+    // Contractor slot 2
+    if (r.contractorName2 === c.name && (parseFloat(r.contractorPay2)||0) > 0) {
+      var key2 = r.id + '_2';
+      if ((paidLog[key2] || noCharge[key2]) && !sheetEventIds.has(r.id + '_2')) {
+        var entry2 = paidLog[key2] || noCharge[key2];
+        logPays.push({
+          amount: parseFloat(r.contractorPay2)||0,
+          date: entry2.date || r.date || '',
+          method: entry2.method || 'Unknown',
+          eventId: r.id,
+          client: r.client || '',
+          source: 'log'
+        });
+        logPaidEventIds.add(r.id);
+      }
+    }
+  });
+  return { sheetPays: cPays, logPays: logPays, logPaidEventIds: logPaidEventIds };
+}
+
 var _expandedTeamId = null;
 function toggleTeamExpand(cId) {
   _expandedTeamId = _expandedTeamId === cId ? null : cId;
@@ -2578,8 +2626,10 @@ function toggleTeamExpand(cId) {
 
 function buildTeamProfile(c) {
   var todayStr = new Date().toISOString().split('T')[0];
-  var payments = DATA.payments || [];
-  var cPays = payments.filter(function(p){return p.contractorId===c.id;});
+  var uPay = getUnifiedPay(c);
+  var cPays = uPay.sheetPays;
+  var logPays = uPay.logPays;
+  var allPays = cPays.map(function(p){return {amount:p.amount,date:p.date};}).concat(logPays);
   var year = new Date().getFullYear();
 
   // ── EVENTS: upcoming + past ──
@@ -2605,10 +2655,12 @@ function buildTeamProfile(c) {
   var pendingDel = allDel.filter(function(d){return d.status!=='done';});
   var completedDel = allDel.filter(function(d){return d.status==='done';});
 
-  // ── PAY ──
-  var ytd = cPays.filter(function(p){return new Date(p.date).getFullYear()===year;}).reduce(function(s,p){return s+p.amount;},0);
-  var total = cPays.reduce(function(s,p){return s+p.amount;},0);
+  // ── PAY (unified: sheet payments + financials mark-paid log) ──
+  var ytd = allPays.filter(function(p){return new Date(p.date).getFullYear()===year;}).reduce(function(s,p){return s+p.amount;},0);
+  var total = allPays.reduce(function(s,p){return s+p.amount;},0);
   var paidEventIds = new Set(cPays.map(function(p){return p.eventId;}));
+  // Also count events paid via the Financials log
+  uPay.logPaidEventIds.forEach(function(eid){paidEventIds.add(eid);});
   var unpaidEvents = assignedLive.filter(function(ev){return !paidEventIds.has(ev.id);});
   var totalOwed = unpaidEvents.reduce(function(s,ev){
     var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
@@ -2763,14 +2815,16 @@ function renderContractors() {
     <div style="font-size:11px;color:var(--muted);margin-bottom:14px">Tap a card to see full profile: events, deliverables, pay, and availability</div>
     <div class="contractor-grid">
       ${DATA.contractors.map(c=>{
-        const cPays    = payments.filter(p=>p.contractorId===c.id);
-        const ytd      = cPays.filter(p=>new Date(p.date).getFullYear()===year).reduce((s,p)=>s+p.amount,0);
-        const total    = cPays.reduce((s,p)=>s+p.amount,0);
+        const uPay     = getUnifiedPay(c);
+        const allPays  = uPay.sheetPays.map(p=>({amount:p.amount,date:p.date})).concat(uPay.logPays);
+        const ytd      = allPays.filter(p=>new Date(p.date).getFullYear()===year).reduce((s,p)=>s+p.amount,0);
+        const total    = allPays.reduce((s,p)=>s+p.amount,0);
         const needs1099 = ytd >= 600;
         const isExpanded = _expandedTeamId === c.id;
 
         // Find assigned unpaid events for this contractor
-        const paidEventIds = new Set(cPays.map(p=>p.eventId));
+        const paidEventIds = new Set(uPay.sheetPays.map(p=>p.eventId));
+        uPay.logPaidEventIds.forEach(eid=>paidEventIds.add(eid));
         const assignedEvents = (DATA.events||[]).filter(ev=>
           (ev.contractorAssignments||[]).some(a=>a.contractorId===c.id)
         );
@@ -2782,6 +2836,13 @@ function renderContractors() {
           const tShare = a?.travelShare ?? ev.travelFee ?? 0;
           return s + (hrs*100) + tShare;
         },0);
+
+        // Historical events for this contractor (not already in live)
+        const liveIds = new Set(assignedEvents.map(e=>e.id));
+        const histEvents = (DATA.historicalEvents||[]).filter(r=>
+          (r.contractorName===c.name || r.contractorName2===c.name) && !liveIds.has(r.id)
+        );
+        const totalEventCount = assignedEvents.length + histEvents.length;
 
         // Deliverables count
         const myDel = (DATA.deliverables||[]).filter(d=>d.assignee===c.name);
@@ -2804,7 +2865,7 @@ function renderContractors() {
           + '<div class="contr-expand-chevron">▼</div></div></div>'
           + '<div class="contr-body" onclick="toggleTeamExpand(\x27' + c.id + '\x27)" style="cursor:pointer">'
           + '<div style="display:flex;gap:16px;flex-wrap:wrap">'
-          + '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--cream)">' + assignedEvents.length + '</div><div style="font-size:9px;color:var(--muted)">Events</div></div>'
+          + '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--cream)">' + totalEventCount + '</div><div style="font-size:9px;color:var(--muted)">Events</div></div>'
           + '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--gold)">$' + ytd.toLocaleString() + '</div><div style="font-size:9px;color:var(--muted)">YTD</div></div>'
           + (totalOwed>0 ? '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:16px;font-weight:600;color:var(--amber)">$' + totalOwed.toLocaleString() + '</div><div style="font-size:9px;color:var(--muted)">Owed</div></div>' : '')
           + (needs1099 ? '<div style="text-align:center;flex:1;min-width:60px"><div style="font-size:14px">⚠️</div><div style="font-size:9px;color:var(--amber)">1099</div></div>' : '')
@@ -3255,6 +3316,7 @@ function confirmContractorPaid(key) {
   toast('✓ Marked as paid via ' + method);
   renderFinancials();
   renderDashboard();
+  renderContractors();
 }
 
 function toggleSelectAll(toggleId, checked) {
@@ -3316,6 +3378,7 @@ function confirmAllContractorPaid() {
   toast('✓ Marked ' + keys.length + ' event' + (keys.length!==1?'s':'') + ' as paid via ' + method);
   renderFinancials();
   renderDashboard();
+  renderContractors();
 }
 
 function undoContractorPaid(key) {
