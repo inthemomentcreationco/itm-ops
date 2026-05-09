@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ITM — Availability</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #EDE8E0;
+  --s1: #E4DED5;
+  --s2: #F0EBE4;
+  --border: rgba(139,26,26,0.10);
+  --border2: rgba(139,26,26,0.20);
+  --gold: #8B1A1A;
+  --gold2: #A82020;
+  --cream: #2C1810;
+  --muted: #7A6258;
+  --muted2: #9A857A;
+  --green: #2E7D32;
+  --greenbg: rgba(46,125,50,0.08);
+  --red: #C62828;
+  --redbg: rgba(198,40,40,0.08);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'Outfit', sans-serif;
+  background: var(--bg);
+  color: var(--cream);
+  min-height: 100vh;
+  padding: 0;
+}
+.container {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 20px 16px 40px;
+}
+.header {
+  text-align: center;
+  margin-bottom: 24px;
+  padding: 20px 0;
+}
+.header-logo {
+  font-family: 'Cormorant', serif;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.02em;
+}
+.header-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.welcome {
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+.welcome-name {
+  font-family: 'Cormorant', serif;
+  font-size: 20px;
+  color: var(--cream);
+}
+.welcome-role {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.nav-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+  justify-content: center;
+}
+.nav-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: var(--s2);
+  color: var(--muted);
+  font-size: 13px;
+  font-family: 'Outfit', sans-serif;
+  cursor: pointer;
+}
+.nav-btn.active {
+  background: var(--gold);
+  color: #fff;
+  border-color: var(--gold);
+}
+.legend {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-bottom: 16px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+.cal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.cal-month {
+  font-family: 'Cormorant', serif;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--cream);
+}
+.cal-nav {
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.cal-dow {
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 0;
+}
+.cal-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+.cal-day.empty { cursor: default; }
+.cal-day.past { color: var(--muted2); opacity: 0.4; cursor: default; }
+.cal-day.today { border-color: var(--gold); font-weight: 600; }
+.cal-day.free {
+  background: var(--greenbg);
+  border-color: var(--green);
+  color: var(--green);
+  font-weight: 600;
+}
+.cal-day.busy {
+  background: var(--redbg);
+  border-color: var(--red);
+  color: var(--red);
+  font-weight: 600;
+}
+.cal-day:active:not(.past):not(.empty) {
+  transform: scale(0.92);
+}
+.status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--s2);
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 100;
+}
+.status-text {
+  font-size: 12px;
+  color: var(--muted);
+}
+.save-btn {
+  padding: 10px 24px;
+  background: var(--gold);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 500;
+  cursor: pointer;
+}
+.save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.toast-msg {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100px);
+  background: var(--cream);
+  color: var(--bg);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 999;
+  transition: transform 0.3s;
+  white-space: nowrap;
+}
+.toast-msg.show { transform: translateX(-50%) translateY(0); }
+.error-msg {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.error-msg strong { color: var(--red); }
+</style>
+</head>
+<body>
+<div id="toast" class="toast-msg"></div>
+<div class="container">
+  <div class="header">
+    <div class="header-logo">In The Moment</div>
+    <div class="header-sub">Team Availability</div>
+  </div>
+  <div id="app">
+    <div class="error-msg">Loading...</div>
+  </div>
+</div>
+<div class="status-bar" id="status-bar" style="display:none">
+  <div class="status-text" id="status-text">No changes</div>
+  <button class="save-btn" id="save-btn" onclick="saveChanges()" disabled>Save Changes</button>
+</div>
+
+<script>
+var SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzh3gDKLKGWeAaCJnK-CIiGW2U6mQB1t-Y0tGCzg_xXueLEh8nH-_hx5yLVkh9h3K82/exec';
+var SECRET = 'phone-remote-cup-pen';
+
+// Get token from URL
+var params = new URLSearchParams(window.location.search);
+var TOKEN = params.get('t') || '';
+
+var memberName = '';
+var memberRole = '';
+var savedDates = {};   // date -> status from server
+var pendingChanges = {}; // date -> status (unsaved)
+var viewMonth = new Date();
+viewMonth.setDate(1);
+
+function toast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 3000);
+}
+
+async function apiCall(action, payload) {
+  var resp = await fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ secret: SECRET, action: action, payload: payload || {} })
+  });
+  var data = await resp.json();
+  if (data.status !== 'ok') throw new Error(data.error || 'API error');
+  return data.data;
+}
+
+async function init() {
+  if (!TOKEN) {
+    document.getElementById('app').innerHTML = '<div class="error-msg"><strong>No access token.</strong><br><br>This page requires a personal link from Lauren. Ask her for your availability link.</div>';
+    return;
+  }
+  try {
+    var result = await apiCall('getAvailForToken', { token: TOKEN });
+    memberName = result.name;
+    memberRole = result.role;
+    (result.dates || []).forEach(function(d) {
+      if (d.date && d.status) savedDates[d.date] = d.status;
+    });
+    render();
+    document.getElementById('status-bar').style.display = 'flex';
+  } catch(e) {
+    document.getElementById('app').innerHTML = '<div class="error-msg"><strong>Invalid or expired link.</strong><br><br>' + e.message + '<br><br>Ask Lauren for a new availability link.</div>';
+  }
+}
+
+function render() {
+  var today = new Date().toISOString().split('T')[0];
+  var year = viewMonth.getFullYear();
+  var month = viewMonth.getMonth();
+  var monthName = viewMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  var firstDay = new Date(year, month, 1).getDay();
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  var html = '<div class="welcome">'
+    + '<div class="welcome-name">' + esc(memberName) + '</div>'
+    + '<div class="welcome-role">' + esc(memberRole) + '</div>'
+    + '</div>';
+
+  html += '<div class="legend">'
+    + '<div class="legend-item"><div class="legend-dot" style="background:var(--greenbg);border:1px solid var(--green)"></div> Available</div>'
+    + '<div class="legend-item"><div class="legend-dot" style="background:var(--redbg);border:1px solid var(--red)"></div> Unavailable</div>'
+    + '<div class="legend-item"><div class="legend-dot" style="background:var(--s1);border:1px solid var(--border2)"></div> Not set</div>'
+    + '</div>';
+
+  html += '<div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px">Tap a date to toggle: available / unavailable / clear</div>';
+
+  html += '<div class="cal-header">'
+    + '<button class="cal-nav" onclick="changeMonth(-1)">&lt;</button>'
+    + '<div class="cal-month">' + monthName + '</div>'
+    + '<button class="cal-nav" onclick="changeMonth(1)">&gt;</button>'
+    + '</div>';
+
+  html += '<div class="cal-grid">';
+  var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  days.forEach(function(d) { html += '<div class="cal-dow">' + d + '</div>'; });
+
+  for (var i = 0; i < firstDay; i++) {
+    html += '<div class="cal-day empty"></div>';
+  }
+
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateStr = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var isPast = dateStr < today;
+    var isToday = dateStr === today;
+    var status = pendingChanges[dateStr] !== undefined ? pendingChanges[dateStr] : savedDates[dateStr];
+    var cls = 'cal-day';
+    if (isPast) cls += ' past';
+    if (isToday) cls += ' today';
+    if (status === 'free') cls += ' free';
+    else if (status === 'busy') cls += ' busy';
+    html += '<div class="' + cls + '"' + (isPast ? '' : ' onclick="toggleDate(\'' + dateStr + '\')"') + '>' + d + '</div>';
+  }
+  html += '</div>';
+
+  // Summary
+  var freeCount = 0, busyCount = 0;
+  var allDates = Object.assign({}, savedDates, pendingChanges);
+  Object.keys(allDates).forEach(function(dt) {
+    if (dt >= today) {
+      if (allDates[dt] === 'free') freeCount++;
+      else if (allDates[dt] === 'busy') busyCount++;
+    }
+  });
+  html += '<div style="margin-top:16px;padding:12px;background:var(--s2);border-radius:8px;border:1px solid var(--border);display:flex;justify-content:space-around;text-align:center">'
+    + '<div><div style="font-size:18px;color:var(--green);font-weight:600">' + freeCount + '</div><div style="font-size:10px;color:var(--muted)">Available</div></div>'
+    + '<div><div style="font-size:18px;color:var(--red);font-weight:600">' + busyCount + '</div><div style="font-size:10px;color:var(--muted)">Unavailable</div></div>'
+    + '</div>';
+
+  document.getElementById('app').innerHTML = html;
+  updateStatusBar();
+}
+
+function toggleDate(dateStr) {
+  var current = pendingChanges[dateStr] !== undefined ? pendingChanges[dateStr] : savedDates[dateStr];
+  // Cycle: none -> free -> busy -> none
+  if (!current) pendingChanges[dateStr] = 'free';
+  else if (current === 'free') pendingChanges[dateStr] = 'busy';
+  else if (current === 'busy') {
+    // If there was a saved value, we need to explicitly clear it
+    if (savedDates[dateStr]) pendingChanges[dateStr] = 'free';
+    else delete pendingChanges[dateStr];
+  }
+  render();
+}
+
+function updateStatusBar() {
+  var changeCount = Object.keys(pendingChanges).filter(function(k) {
+    return pendingChanges[k] !== savedDates[k];
+  }).length;
+  var statusEl = document.getElementById('status-text');
+  var btn = document.getElementById('save-btn');
+  if (changeCount === 0) {
+    statusEl.textContent = 'All saved';
+    statusEl.style.color = 'var(--green)';
+    btn.disabled = true;
+    btn.textContent = 'Save Changes';
+  } else {
+    statusEl.textContent = changeCount + ' unsaved change' + (changeCount !== 1 ? 's' : '');
+    statusEl.style.color = 'var(--gold)';
+    btn.disabled = false;
+    btn.textContent = 'Save ' + changeCount + ' Change' + (changeCount !== 1 ? 's' : '');
+  }
+}
+
+async function saveChanges() {
+  var btn = document.getElementById('save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  var dates = [];
+  Object.keys(pendingChanges).forEach(function(k) {
+    if (pendingChanges[k] !== savedDates[k]) {
+      dates.push({ date: k, status: pendingChanges[k] });
+    }
+  });
+  if (dates.length === 0) { toast('No changes to save'); render(); return; }
+  try {
+    await apiCall('saveAvailBatch', { token: TOKEN, dates: dates });
+    // Merge pending into saved
+    dates.forEach(function(d) { savedDates[d.date] = d.status; });
+    pendingChanges = {};
+    toast('Saved ' + dates.length + ' date' + (dates.length !== 1 ? 's' : ''));
+    render();
+  } catch(e) {
+    toast('Save failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  }
+}
+
+function changeMonth(delta) {
+  viewMonth.setMonth(viewMonth.getMonth() + delta);
+  render();
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+init();
+</script>
+</body>
+</html>
