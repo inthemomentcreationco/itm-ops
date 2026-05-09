@@ -1361,11 +1361,7 @@ const SHOULDER_MONTHS = [3, 10]; // Apr, Nov
 // Package hours for distance-to-package ratio
 const PACKAGE_HOURS = { "just a little": 8, "happy medium": 10, "full on paparazzi": 12 };
 
-function getPackageHours(inq) {
-  const pkg = String(inq.package || '').toLowerCase();
-  for (const [k, v] of Object.entries(PACKAGE_HOURS)) { if (pkg.includes(k)) return v; }
-  return 8; // default to entry
-}
+// getPackageHours is defined later (~line 2649) — single definition handles both obj and string args
 
 function getMyPrice(inq) {
   const pkg = String(inq.package || '').toLowerCase();
@@ -2646,9 +2642,11 @@ async function sendEmailGmail(id) {
   }
 }
 
-function getPackageHours(pkg, eventType) {
-  const p = (pkg||'').toLowerCase();
-  const isWedding = /wedding|multi/i.test(eventType||'');
+function getPackageHours(pkgOrInq, eventType) {
+  const raw = typeof pkgOrInq === 'object' ? (pkgOrInq && pkgOrInq.package) : pkgOrInq;
+  const p = String(raw||'').toLowerCase();
+  const evtType = eventType || (typeof pkgOrInq === 'object' ? (pkgOrInq && pkgOrInq.eventType) : '') || '';
+  const isWedding = /wedding|multi/i.test(evtType);
   if (p.includes('full on paparazzi')) return isWedding ? 12 : 8;
   if (p.includes('happy medium'))      return isWedding ? 10 : 6;
   if (p.includes('just a little'))     return isWedding ? 8  : 4;
