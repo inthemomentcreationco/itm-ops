@@ -742,10 +742,38 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
       </div>
     </div>
 
-    <!-- No events assigned state -->
-    <div id="pay-no-events" style="display:none;padding:20px 0;text-align:center;color:var(--muted);font-size:13px">
-      No booked events assigned to this contractor yet.<br>
-      <span style="font-size:12px">Assign them to events in the Events tab or when booking a client.</span>
+    <!-- No events assigned state — show ad-hoc payment form -->
+    <div id="pay-no-events" style="display:none;padding:16px 0">
+      <div style="text-align:center;color:var(--muted);font-size:12px;margin-bottom:14px">
+        No unpaid events assigned to this contractor.<br>Use the form below to log an ad-hoc payment.
+      </div>
+      <div style="background:var(--s2);border:1px solid var(--border);border-radius:9px;padding:14px;margin-bottom:14px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-bottom:10px">Ad-Hoc Payment</div>
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-lbl">Description / Event</label>
+            <input class="field-input" type="text" id="tp-adhoc-desc" placeholder="e.g. Spilled Milk Feb, Training">
+          </div>
+          <div class="field">
+            <label class="field-lbl">Amount ($)</label>
+            <input class="field-input" type="number" id="tp-adhoc-amount" placeholder="0" min="0" step="1">
+          </div>
+          <div class="field">
+            <label class="field-lbl">Date Paid</label>
+            <input class="field-input" type="date" id="tp-adhoc-date">
+          </div>
+          <div class="field">
+            <label class="field-lbl">Payment Method</label>
+            <select class="field-select" id="tp-adhoc-method">
+              <option>Venmo</option><option>Cash App</option><option>Check</option><option>Cash</option><option>Zelle</option>
+            </select>
+          </div>
+        </div>
+        <div class="action-row" style="margin-top:14px">
+          <button class="btn btn-gold" onclick="saveAdhocPayment()">Log Payment</button>
+          <button class="btn btn-outline" onclick="closePayModal()">Cancel</button>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -2063,7 +2091,18 @@ function renderInquiries() {
 function markResponded(id, e) {
   e.stopPropagation();
   const inq = DATA.inquiries.find(i=>i.id===id);
-  if (inq) { inq.stage = 'contacted'; saveCfg(); renderInquiries(); renderDashboard(); toast('✓ Marked as responded'); }
+  if (inq) {
+    inq.stage = 'contacted';
+    saveCfg();
+    // Persist to Google Sheet
+    if (inq._rowIndex) {
+      apiCall('updateInquiryStage', { rowIndex: inq._rowIndex, stage: 'contacted' }).catch(function(e2) {
+        console.warn('Could not persist stage to sheet:', e2);
+      });
+    }
+    renderInquiries(); renderDashboard();
+    toast('✓ Marked as responded');
+  }
 }
 
 function inqCard(inq, clickable=true) {
@@ -2327,7 +2366,17 @@ function closeDetail(e) {
 
 function setStage(id, stage) {
   const inq = DATA.inquiries.find(i=>i.id===id);
-  if (inq) { inq.stage = stage; saveCfg(); renderAll(); openDetail(id); }
+  if (inq) {
+    inq.stage = stage;
+    saveCfg();
+    // Persist to Google Sheet
+    if (inq._rowIndex) {
+      apiCall('updateInquiryStage', { rowIndex: inq._rowIndex, stage: stage }).catch(function(e) {
+        console.warn('Could not persist stage to sheet:', e);
+      });
+    }
+    renderAll(); openDetail(id);
+  }
 }
 
 function copyEmail(id) {
@@ -3306,7 +3355,7 @@ function openMarkContractorPaid(key, name, amount) {
   document.body.appendChild(modal);
 }
 
-function confirmContractorPaid(key) {
+async function confirmContractorPaid(key) {
   const method = document.getElementById('cp-method').value;
   const date   = document.getElementById('cp-date').value;
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
@@ -3314,9 +3363,43 @@ function confirmContractorPaid(key) {
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
   document.getElementById('contractor-paid-modal').remove();
   toast('✓ Marked as paid via ' + method);
+  // Also persist to ITM_Payments sheet so Team page and Google Sheets stay in sync
+  persistMarkPaidToSheet(key, date, method);
   renderFinancials();
   renderDashboard();
   renderContractors();
+}
+
+function persistMarkPaidToSheet(key, date, method) {
+  // key format: eventId_1 or eventId_2
+  var parts = key.split('_');
+  var slot = parts.pop();
+  var eventId = parts.join('_');
+  var hist = (DATA.historicalEvents||[]).find(function(r){return r.id===eventId;});
+  if (!hist) return;
+  var cName = slot === '2' ? hist.contractorName2 : hist.contractorName;
+  var cHours = slot === '2' ? hist.contractorHours2 : hist.contractorHours;
+  var cPay = slot === '2' ? (parseFloat(hist.contractorPay2)||0) : (parseFloat(hist.contractorPay)||0);
+  if (!cName || cPay <= 0) return;
+  // Find contractor ID from name
+  var cMatch = (DATA.contractors||[]).find(function(c){return c.name===cName;});
+  var contractorId = cMatch ? cMatch.id : 'unknown';
+  var payment = {
+    id: 'fpay_' + key + '_' + Date.now(),
+    contractorId: contractorId,
+    eventId: eventId,
+    event: hist.client || '',
+    eventDate: hist.date || '',
+    hours: parseFloat(cHours) || 0,
+    travelShare: 0,
+    amount: cPay,
+    date: date,
+    method: method
+  };
+  apiCall('savePayment', payment).then(function(){
+    DATA.payments = DATA.payments || [];
+    DATA.payments.push(payment);
+  }).catch(function(e){ console.warn('Could not persist mark-paid to sheet:', e); });
 }
 
 function toggleSelectAll(toggleId, checked) {
@@ -3372,7 +3455,11 @@ function confirmAllContractorPaid() {
   const method = document.getElementById('cp-method').value;
   const date   = document.getElementById('cp-date').value;
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
-  keys.forEach(key => { paidLog[key] = { date, method, markedAt: new Date().toISOString() }; });
+  keys.forEach(key => {
+    paidLog[key] = { date, method, markedAt: new Date().toISOString() };
+    // Also persist each to ITM_Payments sheet
+    persistMarkPaidToSheet(key, date, method);
+  });
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
   document.getElementById('contractor-paid-modal').remove();
   toast('✓ Marked ' + keys.length + ' event' + (keys.length!==1?'s':'') + ' as paid via ' + method);
@@ -4378,7 +4465,7 @@ function takeHomeCalc() {
 
 // ════════════════════════════════ RETAINER / AD HOC / HISTORICAL ════════════════════════════════
 
-function saveRetainer() {
+async function saveRetainer() {
   const client = document.getElementById('ret-client').value.trim();
   const income = +(document.getElementById('ret-income').value)||0;
   const cost   = +(document.getElementById('ret-cost').value)||0;
@@ -4386,9 +4473,19 @@ function saveRetainer() {
   const notes  = document.getElementById('ret-notes').value.trim();
   if (!client || !month) { toast('Please enter client name and month.'); return; }
   if (!income) { toast('Please enter the income amount.'); return; }
+  const id = 'ret_'+Date.now();
   DATA.retainerIncome = DATA.retainerIncome || [];
-  DATA.retainerIncome.push({ id:'ret_'+Date.now(), client, income, cost, month, notes });
+  DATA.retainerIncome.push({ id, client, income, cost, month, notes });
   localStorage.setItem('itm_retainer', JSON.stringify(DATA.retainerIncome));
+  // Also persist to ITM_Financials sheet
+  try {
+    await apiCall('saveFinancial', {
+      id: id, date: month + '-01', client: client,
+      eventType: 'Retainer', grossAmount: income,
+      hbFees: 0, travelFee: 0, deposit: income, balanceDue: 0, paid: true,
+      contractorPay: cost, source: 'retainer', notes: notes
+    });
+  } catch(e) { console.warn('Could not persist retainer to sheet:', e); }
   document.getElementById('ret-client').value = '';
   document.getElementById('ret-income').value = '';
   document.getElementById('ret-cost').value = '';
@@ -4398,7 +4495,7 @@ function saveRetainer() {
   renderFinancials();
 }
 
-function saveAdHoc() {
+async function saveAdHoc() {
   const contractorId = document.getElementById('adhoc-contractor').value;
   const type         = document.getElementById('adhoc-type').value;
   const amount       = +(document.getElementById('adhoc-amount').value)||0;
@@ -4407,15 +4504,30 @@ function saveAdHoc() {
   if (!contractorId) { toast('Please select a contractor.'); return; }
   if (!amount) { toast('Please enter an amount.'); return; }
   if (!date) { toast('Please enter the date paid.'); return; }
+  const id = 'smahoc_'+Date.now();
   DATA.adHocPayments = DATA.adHocPayments || [];
-  DATA.adHocPayments.push({ id:'adhoc_'+Date.now(), contractorId, type, amount, date, notes });
+  DATA.adHocPayments.push({ id, contractorId, type, amount, date, notes });
   localStorage.setItem('itm_adhoc', JSON.stringify(DATA.adHocPayments));
+  // Also persist to ITM_Payments sheet
+  var cMatch = (DATA.contractors||[]).find(function(c){return c.id===contractorId;});
+  try {
+    var payment = {
+      id: id, contractorId: contractorId,
+      eventId: 'adhoc_' + date, event: type + (notes ? ' — ' + notes : ''),
+      eventDate: date, hours: 0, travelShare: 0,
+      amount: amount, date: date, method: 'Ad Hoc'
+    };
+    await apiCall('savePayment', payment);
+    DATA.payments = DATA.payments || [];
+    DATA.payments.push(payment);
+  } catch(e) { console.warn('Could not persist ad-hoc payment to sheet:', e); }
   document.getElementById('adhoc-contractor').value = '';
   document.getElementById('adhoc-amount').value = '';
   document.getElementById('adhoc-date').value = '';
   document.getElementById('adhoc-notes').value = '';
   toast('Ad hoc payment logged ✓');
   renderFinancials();
+  renderContractors();
 }
 
 // ── CSV IMPORT ────────────────────────────────────────────────
@@ -5317,6 +5429,9 @@ function onPayContractorChange() {
     sel.style.display = 'none';
     document.getElementById('pay-event-note').textContent = '';
     noEvents.style.display = 'block';
+    // Pre-fill ad-hoc date
+    var adhocDate = document.getElementById('tp-adhoc-date');
+    if (adhocDate) adhocDate.value = new Date().toISOString().split('T')[0];
     return;
   }
 
@@ -5441,6 +5556,49 @@ async function savePayment() {
   const c = DATA.contractors.find(x=>x.id===_payContext.contractorId);
   toast(`$${amount.toLocaleString()} logged for ${c?.name||'contractor'} · ${_payContext.ev.client}`);
   _payContext = null;
+}
+
+async function saveAdhocPayment() {
+  const contractorId = document.getElementById('pay-contractor').value;
+  if (!contractorId) { toast('Please select a contractor.'); return; }
+  const desc   = (document.getElementById('tp-adhoc-desc').value || '').trim();
+  const amount = parseFloat(document.getElementById('tp-adhoc-amount').value) || 0;
+  const date   = document.getElementById('tp-adhoc-date').value;
+  const method = document.getElementById('tp-adhoc-method').value;
+  if (!desc)   { toast('Please enter a description.'); return; }
+  if (amount <= 0) { toast('Please enter an amount.'); return; }
+  if (!date)   { toast('Please enter the date paid.'); return; }
+
+  const payment = {
+    id:           'adhoc_' + Date.now(),
+    contractorId: contractorId,
+    eventId:      'adhoc_' + Date.now(),
+    event:        desc,
+    eventDate:    date,
+    hours:        0,
+    travelShare:  0,
+    amount:       amount,
+    date:         date,
+    method:       method,
+  };
+
+  try {
+    await apiCall('savePayment', payment);
+  } catch(e) {
+    toast('Could not save payment: ' + e.message);
+    return;
+  }
+
+  DATA.payments = DATA.payments || [];
+  DATA.payments.push(payment);
+
+  saveCfg();
+  renderContractors();
+  renderFinancials();
+  closePayModal();
+
+  const c = DATA.contractors.find(function(x){return x.id===contractorId;});
+  toast('$' + amount.toLocaleString() + ' logged for ' + (c ? c.name : 'contractor') + ' — ' + desc);
 }
 
 // ════════════════════════════════ SETTINGS ════════════════════════════════
