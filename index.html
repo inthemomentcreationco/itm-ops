@@ -1172,6 +1172,12 @@ async function syncData() {
     }
   }
 
+  // 3b. Also load calendar via OAuth (the primary method)
+  try {
+    const calReady = await ensureGcalToken();
+    if (calReady) { window._silentCalSync = true; await fetchCalendarEvents(); window._silentCalSync = false; }
+  } catch(e) { window._silentCalSync = false; console.warn('OAuth calendar sync skipped:', e.message); }
+
   // 4. Re-score all inquiries
   // Merge any stage updates from events back into inquiries
   DATA.inquiries.forEach(inq => {
@@ -1493,16 +1499,18 @@ function getAvailabilityForDate(dateStr) {
     // For Lauren, also check Google Calendar
     const isLaurenCalBooked = c.isOwner && laurenBooked;
 
+    const hasAnyAvail = DATA.availability.some(a => a.contractorId === c.id || a.name === c.name);
     let status;
     if (bookedOnEvent || isLaurenCalBooked) status = 'booked';
-    else if (!entry)                        status = 'unknown';
-    else if (entry.status === 'free')       status = 'free';
-    else                                    status = 'busy';
+    else if (entry && entry.status === 'free')  status = 'free';
+    else if (entry && entry.status === 'busy')  status = 'busy';
+    else if (hasAnyAvail)                       status = 'available';
+    else                                        status = 'unknown';
 
     return { ...c, status, submittedAt: entry?.submittedAt };
   });
 
-  const freeContractors    = teamStatus.filter(c => c.status === 'free');
+  const freeContractors    = teamStatus.filter(c => c.status === 'free' || c.status === 'available');
   const busyContractors    = teamStatus.filter(c => c.status === 'busy');
   const bookedContractors  = teamStatus.filter(c => c.status === 'booked');
   const unknownContractors = teamStatus.filter(c => c.status === 'unknown');
@@ -1515,7 +1523,7 @@ function getAvailabilityForDate(dateStr) {
 
   // Availability verdict
   let verdict, severity;
-  var laurenFree = laurenStatus && laurenStatus.status === 'free';
+  var laurenFree = laurenStatus && (laurenStatus.status === 'free' || laurenStatus.status === 'available');
   var laurenBusyOrBooked = laurenStatus && (laurenStatus.status === 'busy' || laurenStatus.status === 'booked');
 
   if (laurenBooked || laurenBusyOrBooked) {
@@ -2381,9 +2389,9 @@ function openDetail(id) {
       ${avail.laurenBooked ? `<div style="font-size:12px;color:var(--red);margin-bottom:8px">Your Google Calendar shows you booked on this date.</div>` : ''}
       <div style="display:flex;flex-direction:column;gap:6px">
         ${avail.teamStatus.map(c => {
-          const icon = c.status==='free'?'🟡':c.status==='busy'?'🔴':c.status==='booked'?'⛔':'⚪';
-          const col  = c.status==='free'?'var(--amber)':c.status==='busy'?'var(--red)':c.status==='booked'?'var(--red)':'var(--muted)';
-          const lbl  = c.status==='free'?'On Hold':c.status==='busy'?'Unavailable':c.status==='booked'?'Booked elsewhere':'No response yet';
+          const icon = c.status==='available'?'🟢':c.status==='free'?'🟡':c.status==='busy'?'🔴':c.status==='booked'?'⛔':'⚪';
+          const col  = c.status==='available'?'var(--green)':c.status==='free'?'var(--amber)':c.status==='busy'?'var(--red)':c.status==='booked'?'var(--red)':'var(--muted)';
+          const lbl  = c.status==='available'?'No conflict':c.status==='free'?'On Hold':c.status==='busy'?'Unavailable':c.status==='booked'?'Booked elsewhere':'No response yet';
           return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)">
             <span>${icon} ${c.name}</span>
             <span style="color:${col};font-family:'JetBrains Mono',monospace;font-size:10px">${lbl}</span>
@@ -6081,8 +6089,11 @@ async function fetchCalendarEvents() {
       return true;
     });
 
+    // Sync into DATA.bookedDates so inquiry availability checks work
+    DATA.bookedDates = gcalEvents.map(e => ({ date: e.start, label: e.title, id: e.id }));
+
     renderCalendar();
-    toast(`✓ Loaded ${gcalEvents.length} events from ${calendars.length} calendars`);
+    if (!window._silentCalSync) toast(`✓ Loaded ${gcalEvents.length} events from ${calendars.length} calendars`);
   } catch(e) {
     toast('Error loading calendar: ' + e.message);
   }
