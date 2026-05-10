@@ -2021,8 +2021,6 @@ function _renderDashboard() {
   const momChange     = lastMonthRev > 0 ? ((thisMonthRev - lastMonthRev) / lastMonthRev * 100) : null;
 
   // Outstanding invoices — read from historicalEvents (source of truth for balances)
-  const _debugMonica = (DATA.historicalEvents||[]).filter(r => (r.client||'').toLowerCase().includes('monica'));
-  if (_debugMonica.length) console.log('DEBUG Monica rows:', JSON.stringify(_debugMonica.map(r => ({client:r.client,paid:r.paid,balanceDue:r.balanceDue,date:r.date}))));
   const unpaidInvoices = (DATA.historicalEvents||[])
     .filter(r => !r.paid && (parseFloat(r.balanceDue)||0) > 0)
     .sort((a,b) => (a.date||'').localeCompare(b.date||''));
