@@ -2381,9 +2381,9 @@ function openDetail(id) {
       ${avail.laurenBooked ? `<div style="font-size:12px;color:var(--red);margin-bottom:8px">Your Google Calendar shows you booked on this date.</div>` : ''}
       <div style="display:flex;flex-direction:column;gap:6px">
         ${avail.teamStatus.map(c => {
-          const icon = c.status==='free'?'🟢':c.status==='busy'?'🔴':c.status==='booked'?'⛔':'⚪';
-          const col  = c.status==='free'?'var(--green)':c.status==='busy'?'var(--red)':c.status==='booked'?'var(--red)':'var(--muted)';
-          const lbl  = c.status==='free'?'Available':c.status==='busy'?'Unavailable':c.status==='booked'?'Booked elsewhere':'No response yet';
+          const icon = c.status==='free'?'🟡':c.status==='busy'?'🔴':c.status==='booked'?'⛔':'⚪';
+          const col  = c.status==='free'?'var(--amber)':c.status==='busy'?'var(--red)':c.status==='booked'?'var(--red)':'var(--muted)';
+          const lbl  = c.status==='free'?'On Hold':c.status==='busy'?'Unavailable':c.status==='booked'?'Booked elsewhere':'No response yet';
           return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)">
             <span>${icon} ${c.name}</span>
             <span style="color:${col};font-family:'JetBrains Mono',monospace;font-size:10px">${lbl}</span>
@@ -2744,12 +2744,12 @@ function buildAvailOverview() {
       var status = entry ? entry.status : '';
       var bg = 'transparent';
       var icon = '';
-      if (status === 'free') { bg = 'rgba(46,125,50,0.15)'; icon = '✓'; }
+      if (status === 'free') { bg = 'rgba(230,81,0,0.12)'; icon = '⏳'; }
       else if (status === 'busy') { bg = 'rgba(198,40,40,0.15)'; icon = '✕'; }
       var d = new Date(dateStr + 'T12:00:00');
       var isWeekend = d.getDay() === 0 || d.getDay() === 6;
       html += '<td style="padding:2px;text-align:center;border-bottom:1px solid var(--border);background:' + (isWeekend && !status ? 'rgba(0,0,0,0.03)' : bg) + ';cursor:pointer" onclick="toggleAvailCell(\x27' + c.id + '\x27,\x27' + c.name + '\x27,\x27' + dateStr + '\x27,this)">'
-        + '<div style="font-size:11px;color:' + (status === 'free' ? 'var(--green)' : status === 'busy' ? 'var(--red)' : 'var(--border2)') + '">' + (icon || '·') + '</div></td>';
+        + '<div style="font-size:11px;color:' + (status === 'free' ? 'var(--amber)' : status === 'busy' ? 'var(--red)' : 'var(--border2)') + '">' + (icon || '·') + '</div></td>';
     });
     html += '</tr>';
   });
@@ -2758,8 +2758,8 @@ function buildAvailOverview() {
 
   // Legend
   html += '<div style="display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--muted);align-items:center;flex-wrap:wrap">'
-    + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--green)">✓</span> Available</div>'
     + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--red)">✕</span> Unavailable</div>'
+    + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--amber)">⏳</span> On Hold</div>'
     + '<div style="display:flex;align-items:center;gap:4px"><span style="color:var(--border2)">·</span> Not submitted</div>'
     + '<div style="margin-left:auto;font-size:10px;color:var(--muted2)">Scroll right for more dates →</div>'
     + '</div></div>';
@@ -2772,12 +2772,12 @@ async function toggleAvailCell(contractorId, contractorName, dateStr, td) {
   var entry = avail.filter(function(a){ return (a.contractorId===contractorId||a.name===contractorName) && a.date===dateStr; })
     .sort(function(a,b){ return (b.submittedAt||'').localeCompare(a.submittedAt||''); })[0];
   var current = entry ? entry.status : '';
-  var next = current === '' ? 'free' : current === 'free' ? 'busy' : 'free';
+  var next = current === '' ? 'busy' : current === 'busy' ? 'free' : '';
 
   // Update UI immediately
-  var bg = next === 'free' ? 'rgba(46,125,50,0.15)' : 'rgba(198,40,40,0.15)';
-  var icon = next === 'free' ? '✓' : '✕';
-  var color = next === 'free' ? 'var(--green)' : 'var(--red)';
+  var bg = next === 'free' ? 'rgba(230,81,0,0.12)' : next === 'busy' ? 'rgba(198,40,40,0.15)' : 'transparent';
+  var icon = next === 'free' ? '⏳' : next === 'busy' ? '✕' : '·';
+  var color = next === 'free' ? 'var(--amber)' : next === 'busy' ? 'var(--red)' : 'var(--border2)';
   td.style.background = bg;
   td.querySelector('div').textContent = icon;
   td.querySelector('div').style.color = color;
@@ -2792,9 +2792,9 @@ async function toggleAvailCell(contractorId, contractorName, dateStr, td) {
     else { DATA.availability.push({ contractorId: contractorId, name: contractorName, date: dateStr, status: next, submittedAt: new Date().toISOString() }); }
   } catch(e) {
     toast('Failed to save: ' + e.message);
-    td.style.background = current === 'free' ? 'rgba(46,125,50,0.15)' : current === 'busy' ? 'rgba(198,40,40,0.15)' : 'transparent';
-    td.querySelector('div').textContent = current === 'free' ? '✓' : current === 'busy' ? '✕' : '·';
-    td.querySelector('div').style.color = current === 'free' ? 'var(--green)' : current === 'busy' ? 'var(--red)' : 'var(--border2)';
+    td.style.background = current === 'free' ? 'rgba(230,81,0,0.12)' : current === 'busy' ? 'rgba(198,40,40,0.15)' : 'transparent';
+    td.querySelector('div').textContent = current === 'free' ? '⏳' : current === 'busy' ? '✕' : '·';
+    td.querySelector('div').style.color = current === 'free' ? 'var(--amber)' : current === 'busy' ? 'var(--red)' : 'var(--border2)';
   }
 }
 

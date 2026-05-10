@@ -21,6 +21,8 @@
   --greenbg: rgba(46,125,50,0.08);
   --red: #C62828;
   --redbg: rgba(198,40,40,0.08);
+  --amber: #E65100;
+  --amberbg: rgba(230,81,0,0.08);
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -163,9 +165,9 @@ body {
 .cal-day.past { color: var(--muted2); opacity: 0.4; cursor: default; }
 .cal-day.today { border-color: var(--gold); font-weight: 600; }
 .cal-day.free {
-  background: var(--greenbg);
-  border-color: var(--green);
-  color: var(--green);
+  background: var(--amberbg);
+  border-color: var(--amber);
+  color: var(--amber);
   font-weight: 600;
 }
 .cal-day.busy {
@@ -315,12 +317,12 @@ function render() {
     + '</div>';
 
   html += '<div class="legend">'
-    + '<div class="legend-item"><div class="legend-dot" style="background:var(--greenbg);border:1px solid var(--green)"></div> Available</div>'
     + '<div class="legend-item"><div class="legend-dot" style="background:var(--redbg);border:1px solid var(--red)"></div> Unavailable</div>'
+    + '<div class="legend-item"><div class="legend-dot" style="background:var(--amberbg);border:1px solid var(--amber)"></div> On Hold</div>'
     + '<div class="legend-item"><div class="legend-dot" style="background:var(--s1);border:1px solid var(--border2)"></div> Not set</div>'
     + '</div>';
 
-  html += '<div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px">Tap a date to toggle: available / unavailable / clear</div>';
+  html += '<div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px">Tap a date to toggle: unavailable / on hold / clear</div>';
 
   html += '<div class="cal-header">'
     + '<button class="cal-nav" onclick="changeMonth(-1)">&lt;</button>'
@@ -360,8 +362,8 @@ function render() {
     }
   });
   html += '<div style="margin-top:16px;padding:12px;background:var(--s2);border-radius:8px;border:1px solid var(--border);display:flex;justify-content:space-around;text-align:center">'
-    + '<div><div style="font-size:18px;color:var(--green);font-weight:600">' + freeCount + '</div><div style="font-size:10px;color:var(--muted)">Available</div></div>'
     + '<div><div style="font-size:18px;color:var(--red);font-weight:600">' + busyCount + '</div><div style="font-size:10px;color:var(--muted)">Unavailable</div></div>'
+    + '<div><div style="font-size:18px;color:var(--amber);font-weight:600">' + freeCount + '</div><div style="font-size:10px;color:var(--muted)">On Hold</div></div>'
     + '</div>';
 
   document.getElementById('app').innerHTML = html;
@@ -370,12 +372,11 @@ function render() {
 
 function toggleDate(dateStr) {
   var current = pendingChanges[dateStr] !== undefined ? pendingChanges[dateStr] : savedDates[dateStr];
-  // Cycle: none -> free -> busy -> none
-  if (!current) pendingChanges[dateStr] = 'free';
-  else if (current === 'free') pendingChanges[dateStr] = 'busy';
-  else if (current === 'busy') {
-    // If there was a saved value, we need to explicitly clear it
-    if (savedDates[dateStr]) pendingChanges[dateStr] = 'free';
+  // Cycle: none -> busy (unavailable) -> free (on hold) -> none
+  if (!current) pendingChanges[dateStr] = 'busy';
+  else if (current === 'busy') pendingChanges[dateStr] = 'free';
+  else if (current === 'free') {
+    if (savedDates[dateStr]) pendingChanges[dateStr] = 'busy';
     else delete pendingChanges[dateStr];
   }
   render();
