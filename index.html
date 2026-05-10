@@ -1035,7 +1035,7 @@ async function syncData() {
             return '';
           };
           return {
-            id:         get('id') || ('inq_' + i),
+            id:         'inq_' + i,
             timestamp:  get('timestamp','submitted','created'),
             email:      get('email'),
             name:       get('full name','name','client','contact'),
