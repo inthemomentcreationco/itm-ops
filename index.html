@@ -1510,41 +1510,54 @@ function getAvailabilityForDate(dateStr) {
     return { ...c, status, submittedAt: entry?.submittedAt };
   });
 
-  const freeContractors    = teamStatus.filter(c => c.status === 'free' || c.status === 'available');
+  const availableContractors = teamStatus.filter(c => c.status === 'available');
+  const holdContractors    = teamStatus.filter(c => c.status === 'free');
   const busyContractors    = teamStatus.filter(c => c.status === 'busy');
   const bookedContractors  = teamStatus.filter(c => c.status === 'booked');
   const unknownContractors = teamStatus.filter(c => c.status === 'unknown');
+  const freeContractors    = availableContractors;
 
   // Separate Lauren from contractors in status
   var laurenStatus = teamStatus.find(function(c) { return c.isOwner; });
-  var contractorFree = freeContractors.filter(function(c) { return !c.isOwner; });
-  var contractorBusy = busyContractors.filter(function(c) { return !c.isOwner; });
+  var contractorAvail   = availableContractors.filter(function(c) { return !c.isOwner; });
+  var contractorHold    = holdContractors.filter(function(c) { return !c.isOwner; });
+  var contractorBusy    = busyContractors.filter(function(c) { return !c.isOwner; });
   var contractorUnknown = unknownContractors.filter(function(c) { return !c.isOwner; });
 
-  // Availability verdict
-  let verdict, severity;
-  var laurenFree = laurenStatus && (laurenStatus.status === 'free' || laurenStatus.status === 'available');
+  var laurenAvail = laurenStatus && laurenStatus.status === 'available';
+  var laurenHold  = laurenStatus && laurenStatus.status === 'free';
+  var laurenFree  = laurenAvail;
   var laurenBusyOrBooked = laurenStatus && (laurenStatus.status === 'busy' || laurenStatus.status === 'booked');
 
-  if (laurenBooked || laurenBusyOrBooked) {
-    if (contractorFree.length > 0) {
-      verdict = 'Lauren unavailable — ' + contractorFree.map(function(c) { return c.name.split(' ')[0]; }).join(', ') + ' free';
-      severity = 'ok';
-    } else if (contractorUnknown.length > 0) {
+  // Build verdict parts
+  let verdict, severity;
+  var parts = [];
+  if (contractorAvail.length > 0) parts.push(contractorAvail.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' available');
+  if (contractorHold.length > 0)  parts.push(contractorHold.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' on hold');
+  if (contractorBusy.length > 0)  parts.push(contractorBusy.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' unavailable');
+
+  var laurenLabel = laurenBusyOrBooked ? 'Lauren unavailable' : laurenHold ? 'Lauren on hold' : laurenAvail ? 'Lauren available' : '';
+
+  if (laurenBusyOrBooked && contractorAvail.length === 0 && contractorHold.length === 0) {
+    if (contractorUnknown.length > 0) {
       verdict = 'Lauren unavailable — ' + contractorUnknown.length + ' team member(s) haven\'t submitted availability';
       severity = 'unknown';
     } else {
-      verdict = 'No one available — Lauren and all team members busy/booked';
+      verdict = 'No one available — everyone is busy/booked' + (contractorHold.length > 0 ? ' or on hold' : '');
       severity = 'conflict';
     }
-  } else if (contractorFree.length > 0) {
-    verdict = (laurenFree ? 'Lauren + ' : '') + contractorFree.map(function(c) { return c.name.split(' ')[0]; }).join(', ') + ' available';
+  } else if (contractorAvail.length > 0) {
+    verdict = (laurenAvail ? 'Lauren + ' : laurenLabel ? laurenLabel + ' — ' : '') + contractorAvail.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' available';
+    if (contractorHold.length > 0) verdict += ' · ' + contractorHold.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' on hold';
     severity = 'ok';
-  } else if (laurenFree) {
-    verdict = 'Lauren available — no contractors free' + (contractorUnknown.length > 0 ? ' (' + contractorUnknown.length + ' unknown)' : '');
-    severity = contractorUnknown.length > 0 ? 'unknown' : 'ok';
-  } else if (unknownContractors.length > 0) {
-    verdict = unknownContractors.length + ' team member(s) haven\'t submitted availability yet';
+  } else if (contractorHold.length > 0 && !laurenBusyOrBooked) {
+    verdict = (laurenLabel ? laurenLabel + ' — ' : '') + 'No one fully free · ' + contractorHold.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' on hold';
+    severity = 'unknown';
+  } else if (contractorHold.length > 0) {
+    verdict = laurenLabel + ' — no one free · ' + contractorHold.map(function(c){ return c.name.split(' ')[0]; }).join(', ') + ' on hold';
+    severity = 'conflict';
+  } else if (contractorUnknown.length > 0) {
+    verdict = (laurenLabel ? laurenLabel + ' — ' : '') + contractorUnknown.length + ' team member(s) haven\'t submitted availability yet';
     severity = 'unknown';
   } else {
     verdict = 'No team members available — everyone is busy or booked';
