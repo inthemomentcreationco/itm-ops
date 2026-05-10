@@ -1984,7 +1984,7 @@ function _renderDashboard() {
   // Merge HB historical + live events for revenue picture
   // Live events that have a contractValue are real bookings
   const liveFinRows = liveEvents.map(e => {
-    const _fm = (DATA.historicalEvents||[]).find(f => f.client === e.client && f.date === e.eventDate);
+    const _fm = (DATA.historicalEvents||[]).find(f => f.date === e.eventDate && (f.client === e.client || (f.client||'').toLowerCase().includes((e.client||'').toLowerCase()) || (e.client||'').toLowerCase().includes((f.client||'').toLowerCase())));
     return {
     id:          e.id,
     date:        e.eventDate || '',
@@ -2120,7 +2120,7 @@ function _renderDashboard() {
     <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px">
       ${upcomingEvents.map((e,i) => {
         const daysOut = Math.round((new Date(e.eventDate+'T12:00:00') - today) / 86400000);
-        const finMatch = (DATA.historicalEvents||[]).find(f => f.client === e.client && f.date === e.eventDate);
+        const finMatch = (DATA.historicalEvents||[]).find(f => f.date === e.eventDate && (f.client === e.client || (f.client||'').toLowerCase().includes((e.client||'').toLowerCase()) || (e.client||'').toLowerCase().includes((f.client||'').toLowerCase())));
         const finPaid  = finMatch ? finMatch.paid : false;
         const bal     = finPaid ? 0 : (finMatch ? finMatch.balanceDue : e.balance) || 0;
         const dep     = finMatch ? finMatch.deposit : e.deposit || 0;
