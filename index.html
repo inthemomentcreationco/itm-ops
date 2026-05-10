@@ -3203,16 +3203,17 @@ function renderFinancials() {
   const hbRows     = allHist.filter(r => !liveIds.has(r.id));
   const hbById     = Object.fromEntries(allHist.map(r => [r.id, r]));
   const liveRows   = liveEvents.map(e => {
-    const fin = hbById[e.id] || {};
+    const fin = hbById[e.id] || allHist.find(f => f.date === e.eventDate && (f.client === e.client || (f.client||'').toLowerCase().includes((e.client||'').toLowerCase()) || (e.client||'').toLowerCase().includes((f.client||'').toLowerCase()))) || {};
+    const finPaid = fin.paid === true;
     return ({
     id:            e.id,
     date:          e.eventDate || '',
     client:        e.client,
     eventType:     e.eventType || '',
     grossAmount:   (e.contractValue||0),
-    deposit:       e.deposit || 0,
-    balanceDue:    e.balance || 0,
-    paid:          (e.balance||0) === 0 && (e.deposit||0) > 0,
+    deposit:       fin.deposit || e.deposit || 0,
+    balanceDue:    finPaid ? 0 : (fin.balanceDue || e.balance || 0),
+    paid:          finPaid || ((e.balance||0) === 0 && (e.deposit||0) > 0),
     contractorPay: parseFloat(fin.contractorPay)||0,
     contractorPay2:parseFloat(fin.contractorPay2)||0,
     source:        'live',
