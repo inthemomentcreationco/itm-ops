@@ -1193,7 +1193,6 @@ async function syncData() {
     btn.className = 'sync-btn connected';
     btn.textContent = `✓ Synced (${DATA.inquiries.length} inquiries)`;
     setTimeout(() => { btn.className = 'sync-btn'; btn.textContent = '↻ Sync'; btn.disabled = false; }, 3000);
-    renderAll();
     // Load financials from Apps Script into historicalEvents
     if (finData && finData.length) {
       DATA.historicalEvents = finData.map(r => ({
@@ -1278,6 +1277,7 @@ async function syncData() {
       }));
     } catch(e) { console.warn('Tasks load failed:', e); }
 
+    renderAll();
     toast(`Synced: ${DATA.inquiries.length} inquiries · ${DATA.events.length} events · ${DATA.historicalEvents ? DATA.historicalEvents.length : 0} financial records`);
   } else {
     btn.textContent = '↻ Sync';
