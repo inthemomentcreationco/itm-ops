@@ -1694,15 +1694,15 @@ function score(inq) {
   const followerCount = parseInt(inq.followerCount || inq.followers || '0', 10) || 0;
   let iPts=0, iColor='a', iDetail='';
   if(followerCount >= 100000){
-    iPts=10;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — major marketing opportunity`;
+    iPts=10;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — Top-Tier Influencer ⚡ MUST RESPOND`;
   } else if(followerCount >= 50000){
-    iPts=8;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — strong marketing value`;
+    iPts=9;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — Mid-Tier Influencer ⚡ MUST RESPOND`;
+  } else if(followerCount >= 30000){
+    iPts=7;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — High Reach — strong marketing value`;
   } else if(followerCount >= 10000){
-    iPts=6;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(1)}K followers — good marketing reach`;
-  } else if(followerCount >= 1000){
-    iPts=4;iColor='a';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(1)}K followers — moderate reach`;
+    iPts=5;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(1)}K followers — Solid Following — good marketing potential`;
   } else if(hasInstagram && followerCount > 0){
-    iPts=3;iColor='a';iDetail=`@${igHandle} — ${followerCount} followers — small but present`;
+    iPts=3;iColor='a';iDetail=`@${igHandle} — ${followerCount >= 1000 ? (followerCount/1000).toFixed(1)+'K' : followerCount} followers — Standard`;
   } else if(hasInstagram){
     iPts=3;iColor='a';iDetail=`@${igHandle} — follower count unknown (check their page)`;
   } else {
@@ -2272,7 +2272,10 @@ function inqCard(inq, clickable=true) {
   if(inq._noPlanner) tags.push('<span class="tag tag-noplan">⛔ No Planner</span>');
   if(inq._travel?.feeMin>0) tags.push(`<span class="tag tag-travel">✈️ $${inq._travel.feeMin}–$${inq._travel.feeMax} travel fee</span>`);
   if(inq.stage==='new') tags.push('<span class="tag tag-new">New</span>');
-  if(inq._followerCount>=10000) tags.push(`<span class="tag tag-ok">📸 ${(inq._followerCount/1000).toFixed(0)}K followers</span>`);
+  if(inq._followerCount>=50000) tags.push(`<span class="tag tag-ok" style="background:rgba(139,26,26,0.12);color:var(--gold);font-weight:600">⚡ ${(inq._followerCount/1000).toFixed(0)}K — MUST RESPOND</span>`);
+  else if(inq._followerCount>=30000) tags.push(`<span class="tag tag-ok">📸 ${(inq._followerCount/1000).toFixed(0)}K — High Reach</span>`);
+  else if(inq._followerCount>=10000) tags.push(`<span class="tag tag-ok">📸 ${(inq._followerCount/1000).toFixed(0)}K followers</span>`);
+  else if(inq._followerCount>=1000) tags.push(`<span class="tag tag-ok" style="background:rgba(46,125,50,0.06)">📸 ${(inq._followerCount/1000).toFixed(1)}K</span>`);
   if(inq._peakInfo?.isSaturday && inq._peakInfo?.isPeakMonth) tags.push('<span class="tag tag-travel" style="background:rgba(255,152,0,0.1);color:var(--amber)">🔥 Peak Saturday</span>');
   if(s>=75&&!inq._hardFails?.length&&!inq._isVIP) tags.push('<span class="tag tag-ok">✓ Strong Lead</span>');
 
@@ -2341,8 +2344,11 @@ function openDetail(id) {
     ${inq._isRepeatClient?`<div style="background:rgba(139,26,26,0.08);border:1px solid rgba(139,26,26,0.25);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--gold)">
       🔄 <strong>Repeat Client</strong> — This person has booked with you before. Priority booking.
     </div>`:''}
-    ${inq._followerCount>=10000?`<div style="background:rgba(46,125,50,0.06);border:1px solid rgba(46,125,50,0.2);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--green)">
-      📸 <strong>High-Reach Client</strong> — @${(inq.instagram||'').replace('@','')} has ${(inq._followerCount/1000).toFixed(0)}K followers. Great marketing exposure.
+    ${inq._followerCount>=50000?`<div style="background:rgba(139,26,26,0.08);border:1px solid rgba(139,26,26,0.25);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--gold)">
+      ⚡ <strong>${inq._followerCount>=100000?'Top-Tier':'Mid-Tier'} Influencer — MUST RESPOND</strong> — @${(inq.instagram||'').replace('@','')} has ${(inq._followerCount/1000).toFixed(0)}K followers. Major marketing opportunity.
+    </div>`
+    :inq._followerCount>=10000?`<div style="background:rgba(46,125,50,0.06);border:1px solid rgba(46,125,50,0.2);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:var(--green)">
+      📸 <strong>${inq._followerCount>=30000?'High Reach':'Solid Following'}</strong> — @${(inq.instagram||'').replace('@','')} has ${(inq._followerCount/1000).toFixed(0)}K followers. Good marketing exposure.
     </div>`:''}
 
     <div class="score-display">
@@ -2421,7 +2427,15 @@ function openDetail(id) {
     <div class="sec-label" style="margin-bottom:10px">Inquiry Details</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:14px">
       <div style="color:var(--muted)">Email</div><div>${inq.email||'—'}</div>
-      <div style="color:var(--muted)">Instagram</div><div>${inq.instagram||'—'}</div>
+      <div style="color:var(--muted)">Instagram</div><div>${(function(){
+        const ig = (inq.instagram||'').trim();
+        if (!ig || ig === '—') return '—';
+        const handle = ig.replace(/^https?:\/\//i,'').replace(/^www\./i,'').replace(/^instagram\.com\//i,'').split('/')[0].split('?')[0].replace(/^@/,'');
+        const fc = inq._followerCount || 0;
+        const fcStr = fc >= 1000 ? (fc/1000).toFixed(fc>=10000?0:1)+'K' : fc > 0 ? fc+'' : '';
+        return '<a href="https://www.instagram.com/'+handle+'/" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none">@'+handle+'</a>'
+          + (fcStr ? ' <span style="color:var(--muted);font-size:11px">('+fcStr+' followers)</span>' : '');
+      })()}</div>
       <div style="color:var(--muted)">Source</div><div>${inq.source||'—'}</div>
       <div style="color:var(--muted)">Planner</div><div>${inq.planner||'—'}</div>
       <div style="color:var(--muted)">Photo/Video</div><div>${inq.photoVideo||'—'}</div>
