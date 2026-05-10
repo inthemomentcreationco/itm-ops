@@ -701,10 +701,6 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
               <div style="font-size:10px;color:var(--muted);margin-bottom:2px">Hours</div>
               <div style="font-size:13px;font-weight:600;color:var(--gold)" id="pf-hours">—</div>
             </div>
-            <div>
-              <div style="font-size:10px;color:var(--muted);margin-bottom:2px">Travel fee share</div>
-              <div style="font-size:13px;font-weight:600;color:var(--amber)" id="pf-travel">—</div>
-            </div>
           </div>
           <!-- Override hours (staggered shifts) -->
           <div id="pf-staggered-row" style="display:none;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
@@ -732,7 +728,6 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 
         <!-- Totals -->
         <div class="computed-row" style="margin-top:12px"><span class="computed-lbl">Base pay (<span id="calc-hrs">0</span> hrs × $100)</span><span class="computed-val" id="calc-base">$0</span></div>
-        <div class="computed-row" style="margin-top:4px"><span class="computed-lbl">Travel fee share</span><span class="computed-val" id="calc-travel">$0</span></div>
         <div class="computed-row" style="margin-top:4px;background:var(--goldbg);border:1px solid var(--border2)"><span class="computed-lbl">Total due</span><span class="computed-val" style="color:var(--gold)" id="calc-total">$0</span></div>
 
         <div class="action-row" style="margin-top:16px">
@@ -1095,7 +1090,6 @@ async function syncData() {
         package:      e.package,
         packageHours: +e.packageHours || 8,
         contractValue:+e.contractValue || 0,
-        travelFee:    +e.travelFee || 0,
         deposit:      +e.deposit || 0,
         balance:      +e.balance || 0,
         status:       e.status || 'upcoming',
@@ -1205,7 +1199,6 @@ async function syncData() {
         packageHours:  r.packageHours||'',
         grossAmount:   parseFloat(r.grossAmount)||0,
         contractValue: parseFloat(r.grossAmount)||0,
-        travelFee:     parseFloat(r.travelFee)||0,
         balanceDue:    parseFloat(r.balanceDue)||0,
         paid:          r.paid===true||String(r.paid).toLowerCase()==='true',
         contractorName:String(r.contractorName||''),
@@ -1214,8 +1207,7 @@ async function syncData() {
         contractorName2:String(r.contractorName2||''),
         contractorHours2:r.contractorHours2||'',
         contractorPay2: parseFloat(r.contractorPay2)||0,
-        travelSplit:   parseFloat(r.travelSplit)||0,
-        netRevenue:    parseFloat(r.netRevenue)||parseFloat(r.grossAmount)||0,
+        netRevenue:    (parseFloat(r.grossAmount)||0) - (parseFloat(r.contractorPay)||0) - (parseFloat(r.contractorPay2)||0),
         taxRate:       parseFloat(r.taxRate)||0.32,
         taxSetAside:   parseFloat(r.taxSetAside)||0,
         postTaxIncome: parseFloat(r.postTaxIncome)||0,
@@ -1974,7 +1966,7 @@ function _renderDashboard() {
     date:        e.eventDate || '',
     client:      e.client,
     eventType:   e.eventType || '',
-    grossAmount: (e.contractValue||0) + (e.travelFee||0),
+    grossAmount: (e.contractValue||0),
     deposit:     e.deposit || 0,
     balanceDue:  e.balance || 0,
     paid:        e.status === 'completed' || (e.balance||0) === 0,
@@ -2058,7 +2050,7 @@ function _renderDashboard() {
         <div class="stat-val">${doubleBooked.length}</div>
         <div class="stat-sub">${doubleBooked.length?'tap to view':'None ✓'}</div>
       </div>
-      <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('Booked Events — Next 60 Days',${JSON.stringify(upcomingEvents.map(r=>({name:r.client,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:(r.contractValue||r.grossAmount||0)+(r.travelFee||0),balanceDue:r.balance||r.balanceDue||0,paid:!r.balance&&(r.deposit||0)>0})))}, 'events')">
+      <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('Booked Events — Next 60 Days',${JSON.stringify(upcomingEvents.map(r=>({name:r.client,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:(r.contractValue||r.grossAmount||0),balanceDue:r.balance||r.balanceDue||0,paid:!r.balance&&(r.deposit||0)>0})))}, 'events')">
         <div class="stat-lbl">Booked Events</div>
         <div class="stat-val">${upcomingEvents.length}</div>
         <div class="stat-sub">in next 60 days</div>
@@ -2104,7 +2096,7 @@ function _renderDashboard() {
         const daysOut = Math.round((new Date(e.eventDate+'T12:00:00') - today) / 86400000);
         const bal     = e.balance || 0;
         const dep     = e.deposit || 0;
-        const gross   = (e.contractValue||0) + (e.travelFee||0);
+        const gross   = (e.contractValue||0);
         const payStatus = bal === 0 ? 'Fully Paid' : dep > 0 ? `$${Math.round(bal).toLocaleString()} due` : 'No deposit yet';
         const payColor  = bal === 0 ? 'var(--green)' : dep > 0 ? 'var(--amber)' : 'var(--red)';
         const eventAssign = (DATA.assignments||[]).filter(a => a.eventId === e.id);
@@ -2671,7 +2663,6 @@ async function bookInquiry(id) {
     package:       inq.package,
     packageHours:  hours,
     contractValue: inq._myPrice || 2000,
-    travelFee:     travelFee,
     deposit:       0,
     balance:       inq._myPrice || 2000,
     status:        'upcoming',
@@ -2902,8 +2893,7 @@ function buildTeamProfile(c) {
   var totalOwed = unpaidEvents.reduce(function(s,ev){
     var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
     var hrs = (a?a.hours:0) || ev.packageHours || 0;
-    var tShare = (a?a.travelShare:null); if(tShare==null) tShare=ev.travelFee||0;
-    return s + (hrs*100) + tShare;
+    return s + (hrs*100);
   },0);
 
   // ── AVAILABILITY mini-calendar (next 30 days) ──
@@ -3001,8 +2991,7 @@ function buildTeamProfile(c) {
     unpaidEvents.forEach(function(ev){
       var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
       var hrs = (a?a.hours:0)||ev.packageHours||0;
-      var tShare = (a?a.travelShare:null); if(tShare==null) tShare=ev.travelFee||0;
-      var evPay = (hrs*100)+tShare;
+      var evPay = (hrs*100);
       html += '<div class="contr-event-row" style="font-size:11px">'
         + '<span>' + escHtml(ev.client||'—') + '</span>'
         + '<span style="color:var(--gold);font-family:\'JetBrains Mono\',monospace">$' + evPay.toLocaleString() + '</span></div>';
@@ -3070,8 +3059,7 @@ function renderContractors() {
         const totalOwed = unpaidEvents.reduce((s,ev)=>{
           const a = (ev.contractorAssignments||[]).find(x=>x.contractorId===c.id);
           const hrs = a?.hours || ev.packageHours;
-          const tShare = a?.travelShare ?? ev.travelFee ?? 0;
-          return s + (hrs*100) + tShare;
+          return s + (hrs*100);
         },0);
 
         // Historical events for this contractor (not already in live)
@@ -3116,7 +3104,7 @@ function renderContractors() {
     <div class="sec-label" style="margin-top:20px">Payment History</div>
     <div class="tbl-wrap">
       <table class="tbl">
-        <thead><tr><th>Date Paid</th><th>Contractor</th><th>Event</th><th>Hours</th><th>Travel</th><th>Total</th><th>Method</th></tr></thead>
+        <thead><tr><th>Date Paid</th><th>Contractor</th><th>Event</th><th>Hours</th><th>Total</th><th>Method</th></tr></thead>
         <tbody>
           ${[...payments].reverse().map(p=>{
             const c = DATA.contractors.find(x=>x.id===p.contractorId);
@@ -3126,7 +3114,6 @@ function renderContractors() {
               <td>${c?.name||'—'}</td>
               <td>${p.event||'—'}</td>
               <td>${p.hours}hrs</td>
-              <td>${p.travelShare>0?'$'+p.travelShare.toLocaleString():'—'}</td>
               <td style="font-weight:600;color:var(--gold)">$${p.amount.toLocaleString()}</td>
               <td><span class="badge ${methClass}">${p.method}</span></td>
             </tr>`;
@@ -3180,7 +3167,7 @@ function renderFinancials() {
     date:          e.eventDate || '',
     client:        e.client,
     eventType:     e.eventType || '',
-    grossAmount:   (e.contractValue||0) + (e.travelFee||0),
+    grossAmount:   (e.contractValue||0),
     deposit:       e.deposit || 0,
     balanceDue:    e.balance || 0,
     paid:          (e.balance||0) === 0 && (e.deposit||0) > 0,
@@ -3706,6 +3693,7 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
   return `
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <div class="sec-label" style="margin-bottom:0">${thisYear} Event Ledger — ${yearRows.length} events · $${Math.round(grossRev).toLocaleString()} gross</div>
+    <button class="btn btn-outline" style="font-size:10px;padding:4px 12px;white-space:nowrap" onclick="autoDetectPackages()">🔍 Auto-Detect Packages</button>
   </div>
   <div class="tbl-wrap">
     <table class="tbl">
@@ -3756,16 +3744,60 @@ function getAllContractorOptions(selected) {
   return html;
 }
 
+const PKG_PRICE_MAP_2026 = {
+  2400: "Just a Little Sumthin'",
+  2600: 'Happy Medium',
+  3000: 'Full-On Paparazzi',
+};
+
+function detectPackageFromAmount(grossAmount) {
+  const amt = Math.round(parseFloat(grossAmount)||0);
+  return PKG_PRICE_MAP_2026[amt] || '';
+}
+
+async function autoDetectPackages() {
+  const allHist = DATA.historicalEvents || [];
+  const candidates = allHist.filter(r => {
+    const d = r.date || '';
+    if (!d) return false;
+    const year = new Date(d + 'T12:00:00').getFullYear();
+    if (year < 2026) return false;
+    const existingPkg = String(r.package || '').trim();
+    if (existingPkg) return false;
+    const gross = Math.round(parseFloat(r.grossAmount) || 0);
+    return !!PKG_PRICE_MAP_2026[gross];
+  });
+
+  if (candidates.length === 0) {
+    toast('No 2026+ events with blank packages and matching prices found');
+    return;
+  }
+
+  if (!confirm(candidates.length + ' event' + (candidates.length !== 1 ? 's' : '') + ' can be auto-detected. Apply packages now?')) return;
+
+  let saved = 0;
+  for (const r of candidates) {
+    const pkg = detectPackageFromAmount(r.grossAmount);
+    r.package = pkg;
+    try {
+      await apiCall('saveFinancial', Object.assign({}, r, { package: pkg, travelFee: 0 }));
+      saved++;
+    } catch (e) { /* continue with others */ }
+  }
+  toast('Updated ' + saved + ' of ' + candidates.length + ' events');
+  renderFinancials();
+}
+
 function openFinEdit(id) {
   const allRows = [...(DATA.historicalEvents||[]), ...(DATA.events||[]).map(e => {
     const fin = (DATA.historicalEvents||[]).find(h=>h.id===e.id)||{};
     return { id:e.id, date:e.eventDate||'', client:e.client, eventType:e.eventType||'',
-      grossAmount:(e.contractValue||0)+(e.travelFee||0), deposit:e.deposit||0,
+      grossAmount:(e.contractValue||0), deposit:e.deposit||0,
       balanceDue:e.balance||0, paid:(e.balance||0)===0&&(e.deposit||0)>0,
       contractorName:fin.contractorName||'', contractorHours:fin.contractorHours||'',
       contractorPay:fin.contractorPay||'', contractorName2:fin.contractorName2||'',
       contractorHours2:fin.contractorHours2||'', contractorPay2:fin.contractorPay2||'',
-      travelFee:e.travelFee||0, hbFees:fin.hbFees||0, package:e.package||fin.package||'',
+      hbFees:fin.hbFees||0, package:e.package||fin.package||'',
       source:'live', _live:e };
   })];
   const r = allRows.find(x => x.id === id);
@@ -3822,7 +3854,7 @@ function openFinEdit(id) {
         </div>
         <div class="field">
           <label class="field-lbl">Contract Value ($)</label>
-          <input class="field-input" id="fe-gross" type="number" value="${r.grossAmount||0}" min="0">
+          <input class="field-input" id="fe-gross" type="number" value="${r.grossAmount||0}" min="0" oninput="(function(v){var sel=document.getElementById('fe-package');if(sel&&!sel.value){var pkg=detectPackageFromAmount(v);if(pkg){for(var i=0;i<sel.options.length;i++){if(sel.options[i].value===pkg){sel.selectedIndex=i;break;}}}}})(this.value)">
         </div>
       </div>
 
@@ -3906,7 +3938,7 @@ async function saveFinEdit(id) {
     contractorHours2: c2hours ? parseFloat(c2hours) : '',
     contractorPay2:   c2pay   ? parseFloat(c2pay)   : '',
     hbFees:    hist?.hbFees || 0,
-    travelFee: hist?.travelFee || live?.travelFee || 0,
+    travelFee: 0,
     source:    hist?.source || 'manual',
     notes:     hist?.notes || '',
   };
@@ -3915,7 +3947,7 @@ async function saveFinEdit(id) {
   if (live) {
     live.deposit = deposit;
     live.balance = paid ? 0 : balanceDue;
-    live.contractValue = grossAmount - (live.travelFee||0);
+    live.contractValue = grossAmount;
     if (paid) live.status = 'completed';
   }
   if (hist) {
@@ -4649,7 +4681,7 @@ function avgNetPerEventCalc() {
   const year     = new Date().getFullYear();
   const ye = events.filter(e => e.eventDate && new Date(e.eventDate).getFullYear()===year);
   if (!ye.length) return 0;
-  const rev    = ye.reduce((s,e)=>s+(e.contractValue||0)+(e.travelFee||0),0);
+  const rev    = ye.reduce((s,e)=>s+(e.contractValue||0),0);
   const cost   = hist.filter(r=>r.date&&new Date(r.date).getFullYear()===year).reduce((s,r)=>s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0),0);
   return (rev-cost)/ye.length;
 }
@@ -4658,14 +4690,14 @@ function avgPerEventCalc() {
   const year   = new Date().getFullYear();
   const ye = events.filter(e=>e.eventDate&&new Date(e.eventDate).getFullYear()===year);
   if (!ye.length) return 0;
-  return ye.reduce((s,e)=>s+(e.contractValue||0)+(e.travelFee||0),0)/ye.length;
+  return ye.reduce((s,e)=>s+(e.contractValue||0),0)/ye.length;
 }
 function takeHomeCalc() {
   loadFin();
   const events   = DATA.events||[];
   const hist     = DATA.historicalEvents||[];
   const year     = new Date().getFullYear();
-  const grossRev = events.filter(e=>e.eventDate&&new Date(e.eventDate).getFullYear()===year).reduce((s,e)=>s+(e.contractValue||0)+(e.travelFee||0),0);
+  const grossRev = events.filter(e=>e.eventDate&&new Date(e.eventDate).getFullYear()===year).reduce((s,e)=>s+(e.contractValue||0),0);
   const cost     = hist.filter(r=>r.date&&new Date(r.date).getFullYear()===year).reduce((s,r)=>s+(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0),0);
   const net      = grossRev - cost - FIN.annualExpenses;
   return net - (net * FIN.taxRate);
@@ -5356,7 +5388,7 @@ async function onPackageChange(eventId, pkg) {
       id: row.id, date: row.date||'', client: row.client||'',
       eventType: row.eventType||'', package: pkg,
       grossAmount: row.grossAmount||0, hbFees: row.hbFees||0,
-      travelFee: row.travelFee||0, deposit: row.deposit||0,
+      travelFee: 0, deposit: row.deposit||0,
       balanceDue: row.balanceDue||0, paid: row.paid||false,
       source: row.source||'manual', notes: row.notes||'',
       contractorName: row.contractorName||'', contractorHours: row.contractorHours||'',
@@ -5403,7 +5435,7 @@ function openAssignModal(eventId) {
     ev = {
       id: hist.id, client: hist.client, eventDate: hist.date,
       eventType: hist.eventType||'', location: '',
-      contractValue: hist.grossAmount||0, travelFee: hist.travelFee||0,
+      contractValue: hist.grossAmount||0,
       balance: hist.balanceDue||0, deposit: hist.deposit||0,
       contractorAssignments: [
         hist.contractorName ? { contractorId: hist.contractorName, contractorName: hist.contractorName, hours: hist.contractorHours||'', pay: hist.contractorPay||0, travelShare: 0, paid: false } : null,
@@ -5427,12 +5459,10 @@ function closeAssignModal() {
 
 function renderAssignModal(ev) {
   const assigned = ev.contractorAssignments || [];
-  const travelFee = ev.travelFee || 0;
 
   document.getElementById('assignModalBody').innerHTML = `
     <div style="font-size:12px;color:var(--muted2);margin-bottom:16px">
       <strong style="color:var(--cream)">${ev.client}</strong> · ${ev.eventDate ? new Date(ev.eventDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'TBD'} · ${ev.packageHours}hr package
-      ${travelFee>0?`<span style="color:var(--amber);margin-left:8px">✈️ $${travelFee} travel fee</span>`:''}
     </div>
 
     <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.1em;color:var(--gold);margin-bottom:10px">How many contractors on this event?</div>
@@ -5445,7 +5475,6 @@ function renderAssignModal(ev) {
     <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.1em;color:var(--gold);margin-bottom:10px">Contractor Details</div>
     <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px">
       ${assigned.map((a,i) => {
-        const tShare = assigned.length===2 ? Math.round(travelFee/2) : travelFee;
         return `<div style="background:var(--s2);border:1px solid var(--border);border-radius:9px;padding:14px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${assigned.length===2?`Contractor ${i+1}`:'Primary Contractor'}</div>
           <select class="field-select" style="width:100%;margin-bottom:8px" onchange="updateAssignment('${ev.id}',${i},'contractorId',this.value)">
@@ -5453,17 +5482,11 @@ function renderAssignModal(ev) {
             ${DATA.contractors.map(c=>`<option value="${c.id}" ${a.contractorId===c.id?'selected':''}>${c.name}</option>`).join('')}
           </select>
           ${assigned.length===2?`
-          <div style="display:flex;gap:8px;align-items:center">
-            <div style="flex:1">
-              <div style="font-size:10px;color:var(--muted);margin-bottom:4px">Hours (or leave blank for full ${ev.packageHours}hrs)</div>
-              <input class="field-input" type="number" placeholder="${ev.packageHours}" value="${a.hours!==ev.packageHours?a.hours:''}" style="width:100%" oninput="updateAssignment('${ev.id}',${i},'hours',+this.value||${ev.packageHours})">
-            </div>
-            ${travelFee>0?`<div style="flex:1">
-              <div style="font-size:10px;color:var(--muted);margin-bottom:4px">Travel share</div>
-              <div style="padding:9px 12px;background:var(--s3);border:1px solid var(--border2);border-radius:7px;font-size:13px;color:var(--amber)">$${tShare}</div>
-            </div>`:''}
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">Hours (or leave blank for full ${ev.packageHours}hrs)</div>
+            <input class="field-input" type="number" placeholder="${ev.packageHours}" value="${a.hours!==ev.packageHours?a.hours:''}" style="width:100%" oninput="updateAssignment('${ev.id}',${i},'hours',+this.value||${ev.packageHours})">
           </div>`:
-          `<div style="font-size:11px;color:var(--muted2)">Hours: <strong style="color:var(--cream)">${a.hours || ev.packageHours}</strong>${travelFee>0?` · Travel share: <strong style="color:var(--amber)">$${travelFee}</strong>`:''}</div>`}
+          `<div style="font-size:11px;color:var(--muted2)">Hours: <strong style="color:var(--cream)">${a.hours || ev.packageHours}</strong></div>`}
         </div>`;
       }).join('')}
     </div>
@@ -5473,8 +5496,7 @@ function renderAssignModal(ev) {
       <div style="font-family:'Cormorant',serif;font-size:24px;color:var(--gold)">$${
         assigned.reduce((sum,a)=>{
           const hrs = a.hours || ev.packageHours;
-          const tShare = assigned.length===2 ? Math.round(travelFee/2) : travelFee;
-          return sum + (hrs*100) + tShare;
+          return sum + (hrs*100);
         }, 0).toLocaleString()
       }</div>
     </div>` : ''}
@@ -5491,15 +5513,13 @@ function setAssignCount(eventId, count) {
   if (!ev) return;
   const existing = ev.contractorAssignments || [];
   if (count===1) {
-    ev.contractorAssignments = [existing[0] || { contractorId:'', contractorName:'', hours: ev.packageHours, travelShare: ev.travelFee||0 }];
+    ev.contractorAssignments = [existing[0] || { contractorId:'', contractorName:'', hours: ev.packageHours, travelShare: 0 }];
   } else {
-    const tShare = Math.round((ev.travelFee||0)/2);
     ev.contractorAssignments = [
-      existing[0] || { contractorId:'', contractorName:'', hours: ev.packageHours, travelShare: tShare },
-      existing[1] || { contractorId:'', contractorName:'', hours: ev.packageHours, travelShare: tShare },
+      existing[0] || { contractorId:'', contractorName:'', hours: ev.packageHours, travelShare: 0 },
+      existing[1] || { contractorId:'', contractorName:'', hours: ev.packageHours, travelShare: 0 },
     ];
   }
-  // in-memory only — saved to Sheet on saveAssignments()
   renderAssignModal(ev);
 }
 
@@ -5512,14 +5532,6 @@ function updateAssignment(eventId, idx, field, value) {
     ev.contractorAssignments[idx].contractorName = c?.name || '';
   }
   if (field==='hours' && !value) ev.contractorAssignments[idx].hours = ev.packageHours;
-  // Recalc travel shares for 2-person events
-  if (ev.contractorAssignments.length===2) {
-    const tShare = Math.round((ev.travelFee||0)/2);
-    ev.contractorAssignments.forEach(a=>a.travelShare=tShare);
-  } else if (ev.contractorAssignments.length===1) {
-    ev.contractorAssignments[0].travelShare = ev.travelFee||0;
-  }
-  // in-memory only — saved to Sheet on saveAssignments()
   renderAssignModal(ev);
 }
 
@@ -5558,7 +5570,7 @@ async function saveAssignments(eventId) {
       await apiCall('saveFinancial', {
         id: finRow.id, date: finRow.date, client: finRow.client,
         eventType: finRow.eventType||'', grossAmount: finRow.grossAmount||0,
-        hbFees: finRow.hbFees||0, travelFee: finRow.travelFee||0,
+        hbFees: finRow.hbFees||0, travelFee: 0,
         deposit: finRow.deposit||0, balanceDue: finRow.balanceDue||0,
         paid: finRow.paid||false, source: finRow.source||'manual',
         notes: finRow.notes||'', package: finRow.package||'',
@@ -5671,17 +5683,15 @@ function onPayEventChange() {
   const assignment = (ev.contractorAssignments||[]).find(a=>a.contractorId===contractorId);
   const numContractors = (ev.contractorAssignments||[]).length;
   const hours      = assignment?.hours || ev.packageHours;
-  const travelShare = assignment?.travelShare ?? (numContractors===2 ? Math.round((ev.travelFee||0)/2) : ev.travelFee||0);
   const isStaggered = numContractors === 2 &&
     (ev.contractorAssignments||[]).some(a => a.hours !== ev.packageHours);
 
-  _payContext = { contractorId, eventId, ev, assignment, hours, travelShare, isStaggered };
+  _payContext = { contractorId, eventId, ev, assignment, hours, isStaggered };
 
   // Fill in the read-only preview
   document.getElementById('pf-event').textContent  = ev.client;
   document.getElementById('pf-date').textContent   = ev.eventDate ? new Date(ev.eventDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}) : 'TBD';
   document.getElementById('pf-hours').textContent  = hours + ' hrs';
-  document.getElementById('pf-travel').textContent = travelShare > 0 ? '$'+travelShare : 'None';
 
   // Show staggered override row if needed
   document.getElementById('pf-staggered-row').style.display = isStaggered ? 'block' : 'none';
@@ -5695,12 +5705,9 @@ function recalcFromPrefill() {
   if (!_payContext) return;
   const override = +(document.getElementById('pf-hours-override').value)||0;
   const hours    = override > 0 ? override : _payContext.hours;
-  const travel   = _payContext.travelShare;
-  const base     = hours * HOURLY_RATE;
-  const total    = base + travel;
+  const total    = hours * HOURLY_RATE;
   document.getElementById('calc-hrs').textContent   = hours;
-  document.getElementById('calc-base').textContent  = '$'+base.toLocaleString();
-  document.getElementById('calc-travel').textContent = '$'+travel.toLocaleString();
+  document.getElementById('calc-base').textContent  = '$'+total.toLocaleString();
   document.getElementById('calc-total').textContent  = '$'+total.toLocaleString();
 }
 
@@ -5712,8 +5719,7 @@ async function savePayment() {
 
   const override = +(document.getElementById('pf-hours-override').value)||0;
   const hours    = override > 0 ? override : _payContext.hours;
-  const travel   = _payContext.travelShare;
-  const amount   = hours * HOURLY_RATE + travel;
+  const amount   = hours * HOURLY_RATE;
 
   const payment = {
     id:           'pay_'+Date.now(),
@@ -6399,7 +6405,7 @@ function renderEvents() {
   // Also include live events not already in financials
   const finIds = new Set(allFin.map(r => r.id));
   const liveOnly = (DATA.events||[]).filter(e => !finIds.has(e.id)).map(e => ({
-    ...e, date: e.eventDate||e.date||'', grossAmount: (e.contractValue||0)+(e.travelFee||0),
+    ...e, date: e.eventDate||e.date||'', grossAmount: (e.contractValue||0),
     balanceDue: e.balance||0, paid: (e.balance||0)===0&&(e.deposit||0)>0
   }));
   const allEvents = [...allFin, ...liveOnly]
@@ -6519,7 +6525,7 @@ function openEventDetail(eventId) {
   if (!e) return;
   const assignments = (DATA.assignments||[]).filter(a => a.eventId === eventId);
   const payments    = (DATA.payments||[]).filter(p => p.eventId === eventId);
-  const gross = (e.contractValue||0) + (e.travelFee||0);
+  const gross = (e.contractValue||0);
   const bal   = e.balance || 0;
   const dep   = e.deposit || 0;
 
@@ -6615,7 +6621,6 @@ function openNewEventModal() {
         <div class="field"><label class="field-lbl">Deposit Paid ($)</label><input class="field-input" id="ne-deposit" type="number" placeholder="0"></div>
         <div class="field" style="grid-column:1/-1"><label class="field-lbl">Location / Venue</label><input class="field-input" id="ne-location" placeholder="Venue name or city"></div>
         <div class="field"><label class="field-lbl">Email</label><input class="field-input" id="ne-email" placeholder="client@email.com"></div>
-        <div class="field"><label class="field-lbl">Travel Fee ($)</label><input class="field-input" id="ne-travel" type="number" placeholder="0"></div>
         <div class="field" style="grid-column:1/-1"><label class="field-lbl">Notes</label><input class="field-input" id="ne-notes" placeholder="Package details, special notes..."></div>
       </div>
       <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
@@ -6632,7 +6637,6 @@ async function saveNewEvent() {
   const value  = parseFloat(document.getElementById('ne-value')?.value)||0;
   if (!client || !date || !value) { toast('Client, date, and contract value are required'); return; }
   const deposit = parseFloat(document.getElementById('ne-deposit')?.value)||0;
-  const travel  = parseFloat(document.getElementById('ne-travel')?.value)||0;
   const ev = {
     id:            'evt-' + Date.now(),
     inquiryId:     '',
@@ -6644,9 +6648,8 @@ async function saveNewEvent() {
     package:        '',
     packageHours:   '',
     contractValue:  value,
-    travelFee:      travel,
     deposit,
-    balance:        value + travel - deposit,
+    balance:        value - deposit,
     status:         'upcoming',
     notes:          document.getElementById('ne-notes')?.value||'',
   };
