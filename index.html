@@ -6504,7 +6504,7 @@ function renderEvents() {
             ${contractors ? `<span>👤 ${contractors}</span>` : '<span style="color:var(--muted)">No contractor assigned</span>'}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:11px;color:${progColor}">${prog.total>2?prog.done+'/'+prog.total+' delivered':isPast?'Set package to track':'Upcoming'}</span>
+            <span style="font-size:11px;color:${progColor}">${prog.total>2?prog.done+'/'+prog.total+' delivered':prog.hasPkg?(isPast?'Track deliverables':'Upcoming'):isPast?'Set package to track':'Upcoming'}</span>
             <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openDeliverableModal('${r.id}','${(r.client||'').replace(/'/g,"\\'")}')">📋 Deliverables</button>
             <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
           </div>
