@@ -1983,18 +1983,20 @@ function _renderDashboard() {
 
   // Merge HB historical + live events for revenue picture
   // Live events that have a contractValue are real bookings
-  const liveFinRows = liveEvents.map(e => ({
+  const liveFinRows = liveEvents.map(e => {
+    const _fm = (DATA.historicalEvents||[]).find(f => f.client === e.client && f.date === e.eventDate);
+    return {
     id:          e.id,
     date:        e.eventDate || '',
     client:      e.client,
     eventType:   e.eventType || '',
     grossAmount: (e.contractValue||0),
-    deposit:     e.deposit || 0,
-    balanceDue:  e.balance || 0,
-    paid:        e.status === 'completed' || (e.balance||0) === 0,
+    deposit:     _fm ? _fm.deposit : e.deposit || 0,
+    balanceDue:  _fm && _fm.paid ? 0 : (_fm ? _fm.balanceDue : e.balance) || 0,
+    paid:        (_fm ? _fm.paid : false) || e.status === 'completed' || (e.balance||0) === 0,
     source:      'live',
     _raw:        e,
-  }));
+  };});
 
   // Combine: prefer live over HB if same client+date exists
   const liveIds = new Set(liveFinRows.map(r => r.id));
@@ -2116,11 +2118,13 @@ function _renderDashboard() {
     <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px">
       ${upcomingEvents.map((e,i) => {
         const daysOut = Math.round((new Date(e.eventDate+'T12:00:00') - today) / 86400000);
-        const bal     = e.balance || 0;
-        const dep     = e.deposit || 0;
+        const finMatch = (DATA.historicalEvents||[]).find(f => f.client === e.client && f.date === e.eventDate);
+        const finPaid  = finMatch ? finMatch.paid : false;
+        const bal     = finPaid ? 0 : (finMatch ? finMatch.balanceDue : e.balance) || 0;
+        const dep     = finMatch ? finMatch.deposit : e.deposit || 0;
         const gross   = (e.contractValue||0);
-        const payStatus = bal === 0 ? 'Fully Paid' : dep > 0 ? `$${Math.round(bal).toLocaleString()} due` : 'No deposit yet';
-        const payColor  = bal === 0 ? 'var(--green)' : dep > 0 ? 'var(--amber)' : 'var(--red)';
+        const payStatus = finPaid || bal === 0 ? 'Fully Paid' : dep > 0 ? `$${Math.round(bal).toLocaleString()} due` : 'No deposit yet';
+        const payColor  = finPaid || bal === 0 ? 'var(--green)' : dep > 0 ? 'var(--amber)' : 'var(--red)';
         const eventAssign = (DATA.assignments||[]).filter(a => a.eventId === e.id);
         return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;${i>0?'border-top:1px solid var(--border)':''}">
           <div style="min-width:48px;text-align:center">
