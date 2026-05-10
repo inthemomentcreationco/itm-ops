@@ -2757,7 +2757,7 @@ function buildAvailOverview() {
       else if (status === 'busy') { bg = 'rgba(198,40,40,0.15)'; icon = '✕'; }
       var d = new Date(dateStr + 'T12:00:00');
       var isWeekend = d.getDay() === 0 || d.getDay() === 6;
-      html += '<td style="padding:2px;text-align:center;border-bottom:1px solid var(--border);background:' + (isWeekend && !status ? 'rgba(0,0,0,0.03)' : bg) + '">'
+      html += '<td style="padding:2px;text-align:center;border-bottom:1px solid var(--border);background:' + (isWeekend && !status ? 'rgba(0,0,0,0.03)' : bg) + ';cursor:pointer" onclick="toggleAvailCell(\x27' + c.id + '\x27,\x27' + c.name + '\x27,\x27' + dateStr + '\x27,this)">'
         + '<div style="font-size:11px;color:' + (status === 'free' ? 'var(--green)' : status === 'busy' ? 'var(--red)' : 'var(--border2)') + '">' + (icon || '·') + '</div></td>';
     });
     html += '</tr>';
@@ -2774,6 +2774,37 @@ function buildAvailOverview() {
     + '</div></div>';
 
   return html;
+}
+
+async function toggleAvailCell(contractorId, contractorName, dateStr, td) {
+  var avail = DATA.availability || [];
+  var entry = avail.filter(function(a){ return (a.contractorId===contractorId||a.name===contractorName) && a.date===dateStr; })
+    .sort(function(a,b){ return (b.submittedAt||'').localeCompare(a.submittedAt||''); })[0];
+  var current = entry ? entry.status : '';
+  var next = current === '' ? 'free' : current === 'free' ? 'busy' : 'free';
+
+  // Update UI immediately
+  var bg = next === 'free' ? 'rgba(46,125,50,0.15)' : 'rgba(198,40,40,0.15)';
+  var icon = next === 'free' ? '✓' : '✕';
+  var color = next === 'free' ? 'var(--green)' : 'var(--red)';
+  td.style.background = bg;
+  td.querySelector('div').textContent = icon;
+  td.querySelector('div').style.color = color;
+
+  // Find the matching token for this contractor
+  var tokenMap = {c1:'lauren_itm_2026',c2:'bianca_itm_2026',c3:'lilly_itm_2026',c4:'roshni_itm_2026',c5:'cece_itm_2026',c6:'jasmine_itm_2026'};
+  var token = tokenMap[contractorId] || '';
+
+  try {
+    await apiCall('saveAvailBatch', { token: token, dates: [{ date: dateStr, status: next }] });
+    if (entry) { entry.status = next; entry.submittedAt = new Date().toISOString(); }
+    else { DATA.availability.push({ contractorId: contractorId, name: contractorName, date: dateStr, status: next, submittedAt: new Date().toISOString() }); }
+  } catch(e) {
+    toast('Failed to save: ' + e.message);
+    td.style.background = current === 'free' ? 'rgba(46,125,50,0.15)' : current === 'busy' ? 'rgba(198,40,40,0.15)' : 'transparent';
+    td.querySelector('div').textContent = current === 'free' ? '✓' : current === 'busy' ? '✕' : '·';
+    td.querySelector('div').style.color = current === 'free' ? 'var(--green)' : current === 'busy' ? 'var(--red)' : 'var(--border2)';
+  }
 }
 
 // ── Unified pay data: merges ITM_Payments sheet + localStorage paidLog from Financials ──
@@ -3706,6 +3737,25 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
   </div>`;
 }
 
+const FORMER_CONTRACTORS = ['Jess Nguyen','Lindsay Bell','Steph Jaee','Giulianna'];
+
+function getAllContractorOptions(selected) {
+  var current = (DATA.contractors||[]).map(function(c){ return c.name; });
+  var all = current.concat(FORMER_CONTRACTORS);
+  var seen = {};
+  var unique = [];
+  all.forEach(function(n){ var key = n.toLowerCase(); if(!seen[key]){ seen[key]=true; unique.push(n); } });
+  if (selected && !unique.some(function(n){ return n.toLowerCase()===selected.toLowerCase(); })) unique.push(selected);
+  var html = '<option value="">— None —</option>';
+  var selLower = (selected||'').toLowerCase();
+  unique.forEach(function(n){
+    var isSel = n.toLowerCase()===selLower ? ' selected' : '';
+    var isFormer = FORMER_CONTRACTORS.some(function(f){ return f.toLowerCase()===n.toLowerCase(); });
+    html += '<option value="'+n.replace(/"/g,'&quot;')+'"'+isSel+'>'+n+(isFormer?' (former)':'')+'</option>';
+  });
+  return html;
+}
+
 function openFinEdit(id) {
   const allRows = [...(DATA.historicalEvents||[]), ...(DATA.events||[]).map(e => {
     const fin = (DATA.historicalEvents||[]).find(h=>h.id===e.id)||{};
@@ -3780,7 +3830,7 @@ function openFinEdit(id) {
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:8px">
         <div class="field">
           <label class="field-lbl">Contractor 1</label>
-          <input class="field-input" id="fe-c1name" type="text" value="${r.contractorName||''}">
+          <select class="field-input" id="fe-c1name">${getAllContractorOptions(r.contractorName||'')}</select>
         </div>
         <div class="field">
           <label class="field-lbl">Hours</label>
@@ -3794,7 +3844,7 @@ function openFinEdit(id) {
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:24px">
         <div class="field">
           <label class="field-lbl">Contractor 2</label>
-          <input class="field-input" id="fe-c2name" type="text" value="${r.contractorName2||''}">
+          <select class="field-input" id="fe-c2name">${getAllContractorOptions(r.contractorName2||'')}</select>
         </div>
         <div class="field">
           <label class="field-lbl">Hours</label>
@@ -4068,8 +4118,9 @@ function openSMEventModal(rowJson) {
   const existing = document.getElementById('sm-event-modal');
   if (existing) existing.remove();
 
-  const contractorSuggestions = ['Lauren Nava','Bianca Young','Lilly Economus','Roshni Lewis','Jess Nguyen','Lindsay Bell','Steph Jaee','Giulianna'];
-  const datalist = `<datalist id="sm-contractors-list">${contractorSuggestions.map(c=>`<option value="${c}">`).join('')}</datalist>`;
+  var smNames = (DATA.contractors||[]).map(function(c){return c.name;}).concat(FORMER_CONTRACTORS);
+  var smSeen = {}; var smUnique = []; smNames.forEach(function(n){var k=n.toLowerCase();if(!smSeen[k]){smSeen[k]=true;smUnique.push(n);}});
+  const datalist = `<datalist id="sm-contractors-list">${smUnique.map(c=>`<option value="${c}">`).join('')}</datalist>`;
 
   const modal = document.createElement('div');
   modal.id = 'sm-event-modal';
