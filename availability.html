@@ -372,11 +372,11 @@ function render() {
 
 function toggleDate(dateStr) {
   var current = pendingChanges[dateStr] !== undefined ? pendingChanges[dateStr] : savedDates[dateStr];
-  // Cycle: none -> busy (unavailable) -> free (on hold) -> none
+  // Cycle: none -> busy (unavailable) -> free (on hold) -> none (clear)
   if (!current) pendingChanges[dateStr] = 'busy';
   else if (current === 'busy') pendingChanges[dateStr] = 'free';
   else if (current === 'free') {
-    if (savedDates[dateStr]) pendingChanges[dateStr] = 'busy';
+    if (savedDates[dateStr]) pendingChanges[dateStr] = '';
     else delete pendingChanges[dateStr];
   }
   render();
@@ -415,7 +415,7 @@ async function saveChanges() {
   try {
     await apiCall('saveAvailBatch', { token: TOKEN, dates: dates });
     // Merge pending into saved
-    dates.forEach(function(d) { savedDates[d.date] = d.status; });
+    dates.forEach(function(d) { if (d.status) savedDates[d.date] = d.status; else delete savedDates[d.date]; });
     pendingChanges = {};
     toast('Saved ' + dates.length + ' date' + (dates.length !== 1 ? 's' : ''));
     render();

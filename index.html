@@ -802,6 +802,8 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 // ════════════════════════════════ CONFIG ════════════════════════════════
 const HOME_ADDRESS = "4 I St SE, Washington DC 20003";
 const HOURLY_RATE  = 100;
+const SMM_COMPANIES = JSON.parse(localStorage.getItem('itm_smm_companies') || 'null') || ['Spilled Milk'];
+function saveSMMCompanies() { localStorage.setItem('itm_smm_companies', JSON.stringify(SMM_COMPANIES)); }
 
 // ════════════════════════════════ STATE ════════════════════════════════
 // CFG: non-sensitive config stored in localStorage (no secret, no financial data)
@@ -994,37 +996,47 @@ async function syncData() {
 
   let inquiriesLoaded = false;
 
-  // 1. Load inquiries via Apps Script (no API key needed)
+  // 1+2. Load ALL data in parallel (inquiries + events + payments + etc.)
+  let finData = [];
+  let _events, _payments, _assignments, _availability, _expenses;
   if (CFG.scriptUrl) {
     try {
-      const rows = await apiCall('getInquiries');
+      const [rows, eventsR, paymentsR, assignmentsR, availabilityR, finDataResult, expensesR] = await Promise.all([
+        apiCall('getInquiries'),
+        apiCall('getEvents'),
+        apiCall('getPayments'),
+        apiCall('getAssignments'),
+        apiCall('getAvailability'),
+        apiCall('getFinancials'),
+        apiCall('getExpenses'),
+      ]);
+      finData = finDataResult || [];
+      _events = eventsR; _payments = paymentsR; _assignments = assignmentsR;
+      _availability = availabilityR; _expenses = expensesR;
+
+      // Process inquiries
       if (rows && rows.length >= 1) {
         DATA.inquiries = rows.map((row, i) => {
           const get = (...keys) => {
             for (const k of keys) {
-              // Exact match first
               const exact = Object.keys(row).find(h => h.toLowerCase() === k.toLowerCase());
               if (exact && row[exact] !== undefined && row[exact] !== '') return String(row[exact]).trim();
             }
             for (const k of keys) {
-              // Partial match fallback
               const found = Object.keys(row).find(h => h.toLowerCase().includes(k.toLowerCase()));
               if (found && row[found] !== undefined && row[found] !== '') return String(row[found]).trim();
             }
             return '';
           };
-          // Strict date: only match columns that are specifically about the EVENT date
           const getDate = () => {
             const priority = ['date of event','event date','wedding date','event_date'];
             for (const k of priority) {
               const found = Object.keys(row).find(h => h.toLowerCase() === k.toLowerCase());
               if (found && row[found]) {
                 const val = String(row[found]).trim();
-                // Must look like a date (contains digits and separators), not "true"/"false"
                 if (/\d/.test(val) && !/^(true|false|yes|no)$/i.test(val)) return val;
               }
             }
-            // Partial match with same validation
             for (const k of priority) {
               const found = Object.keys(row).find(h => h.toLowerCase().includes(k.toLowerCase()));
               if (found && row[found]) {
@@ -1055,7 +1067,6 @@ async function syncData() {
             _rowIndex:  i + 1,
           };
         });
-        // Sort newest inquiry first
         DATA.inquiries.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         inquiriesLoaded = true;
       }
@@ -1064,19 +1075,13 @@ async function syncData() {
     }
   }
 
-  // 2. Load events, payments, assignments from Apps Script
-  let finData = [];
-  if (CFG.scriptUrl) {
+  // Process events, payments, assignments (already loaded above in parallel)
+  if (CFG.scriptUrl && _events) {
     try {
-      const [events, payments, assignments, availability, finDataResult, expenses] = await Promise.all([
-        apiCall('getEvents'),
-        apiCall('getPayments'),
-        apiCall('getAssignments'),
-        apiCall('getAvailability'),
-        apiCall('getFinancials'),
-        apiCall('getExpenses'),
-      ]);
-      finData = finDataResult || [];
+      const events = _events;
+      const payments = _payments;
+      const assignments = _assignments;
+      const availability = _availability;
 
       // Merge events from Apps Script into DATA.events
       DATA.events = (events || []).map(e => ({
@@ -1245,27 +1250,7 @@ async function syncData() {
       }));
     } catch(e) { console.warn('Deliverables load failed:', e); }
 
-    // Auto-init deliverables for upcoming events that don't have any yet
-    try {
-      const todayAuto = new Date().toISOString().split('T')[0];
-      const delEventIds = new Set((DATA.deliverables||[]).map(d => d.eventId));
-      const needInit = (DATA.historicalEvents||[]).filter(r => r.client && r.date && r.date >= todayAuto && !delEventIds.has(r.id));
-      for (const r of needInit) {
-        try {
-          const res = await apiCall('initEventDeliverables', { eventId: r.id, client: r.client, eventDate: r.date, package: r.package||'' });
-          if (res && res.initialized) console.log('Auto-init deliverables for', r.client, ':', res.count, 'items');
-        } catch(ie) { console.warn('Auto-init failed for', r.id, ie); }
-      }
-      if (needInit.length > 0) {
-        const delRows2 = await apiCall('getDeliverableRows');
-        DATA.deliverables = (delRows2 || []).map(d => ({
-          id: String(d.id||''), eventId: String(d.eventId||''), client: String(d.client||''),
-          eventDate: String(d.eventDate||''), type: String(d.type||''), label: String(d.label||d.type||''),
-          status: String(d.status||'pending'), assignee: String(d.assignee||''),
-          dueDate: String(d.dueDate||''), completedDate: String(d.completedDate||''), notes: String(d.notes||'')
-        }));
-      }
-    } catch(e) { console.warn('Auto-init deliverables failed:', e); }
+    // Auto-init deliverables deferred to when user opens deliverables page (see renderDeliverables)
 
     // Load personal tasks
     try {
@@ -1292,36 +1277,6 @@ async function syncData() {
   }
 }
 
-function parseRow(headers, row, idx) {
-  const get = (...keys) => {
-    for (const k of keys) {
-      const i = headers.findIndex(h => h.includes(k.toLowerCase()));
-      if (i !== -1 && row[i]) return row[i].trim();
-    }
-    return '';
-  };
-
-  return {
-    id:         'inq_' + idx,
-    timestamp:  get('timestamp','submitted'),
-    email:      get('email'),
-    name:       get('full name','name'),
-    eventDate:  get('date of event','event date','date'),
-    eventType:  get('type of event','event type','type'),
-    package:    get('package'),
-    location:   get('where is your event','location','venue','city'),
-    instagram:  get('instagram'),
-    planner:    get('planner'),
-    budget:     get('budget'),
-    photoVideo: get('photographer','videographer','photo'),
-    vision:     get('vision','inspo','describe'),
-    source:     get('how did you hear','source'),
-    stage:      'new',
-    notes:      '',
-    score:      0,
-    scored:     false,
-  };
-}
 
 // ════════════════════════════════ DEMO DATA ════════════════════════════════
 function loadDemoData() {
@@ -2200,8 +2155,6 @@ function autoArchivePastInquiries() {
 let inqTab = 'needs'; // 'needs' | 'active' | 'archived' | 'all'
 
 function renderInquiries() {
-  autoArchivePastInquiries();
-
   const needs    = DATA.inquiries.filter(i => i.stage === 'new');
   const active   = DATA.inquiries.filter(i => ['contacted','proposal','booked'].includes(i.stage));
   const archived = DATA.inquiries.filter(i => ['archived','declined'].includes(i.stage));
@@ -3219,8 +3172,8 @@ function renderFinancials() {
   });});
   const allRows    = [...liveRows, ...hbRows];
 
-  // ── SMM (SPILLED MILK) — visibility only, still in totals ──
-  const isSMM = r => (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
+  // ── SMM (Social Media Management clients) — visibility only, still in totals ──
+  const isSMM = r => (r.source||'').startsWith('smm_') || (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
   const smmRows    = allRows.filter(isSMM);
   const smmYear    = smmRows.filter(r => { const d=r.date||r.eventDate||''; return d && new Date(d).getFullYear()===thisYear; });
   // For stat card: show current year if has data, otherwise trailing 12 months
@@ -3334,7 +3287,7 @@ function renderFinancials() {
       <div style="font-size:10px;color:${postTax>=FIN.ownSalaryGoal?'var(--green)':'var(--red)'};margin-top:4px">${postTax>=FIN.ownSalaryGoal?'✓ Meets goal':'⚠ Below goal'} of $${(FIN.ownSalaryGoal/1000).toFixed(0)}k</div>
     </div>
     <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._finTab='smm';renderFinancials()">
-      <div class="stat-lbl" style="color:var(--gold)">📱 SMM (Spilled Milk)</div>
+      <div class="stat-lbl" style="color:var(--gold)">📱 SMM Clients</div>
       <div class="stat-val" style="color:var(--gold)">$${(smmGross/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">${smmLabel} · ${smmDisplay.length} invoice${smmDisplay.length!==1?'s':''} · tap to view</div>
     </div>
@@ -4105,8 +4058,8 @@ function renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, 
 
 function renderFinSMM(smmRows, thisYear) {
   // Split: HB consolidated invoices vs manually logged individual events
-  const smmInvoices = smmRows.filter(r => (r.source||'').toLowerCase() !== 'spilled_milk');
-  const smmEvents   = smmRows.filter(r => (r.source||'').toLowerCase() === 'spilled_milk');
+  const smmInvoices = smmRows.filter(r => !(r.source||'').startsWith('smm_') && (r.source||'').toLowerCase() !== 'spilled_milk');
+  const smmEvents   = smmRows.filter(r => (r.source||'').startsWith('smm_') || (r.source||'').toLowerCase() === 'spilled_milk');
 
   const sorted = [...smmInvoices].filter(r => r.date||r.eventDate).sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
   const evSorted = [...smmEvents].filter(r => r.date||r.eventDate).sort((a,b) => (b.date||b.eventDate||'').localeCompare(a.date||a.eventDate||''));
@@ -4144,9 +4097,12 @@ function renderFinSMM(smmRows, thisYear) {
   </tr></thead>`;
 
   return `
-  <div style="margin-bottom:16px">
-    <div style="font-family:'Cormorant',serif;font-size:20px;margin-bottom:4px">\ud83d\udcf1 Spilled Milk \u2014 Social Media Management</div>
-    <div style="font-size:12px;color:var(--muted)">Recurring SMM client. Included in all revenue totals.</div>
+  <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <div style="font-family:'Cormorant',serif;font-size:20px;margin-bottom:4px">\ud83d\udcf1 Social Media Management</div>
+      <div style="font-size:12px;color:var(--muted)">SMM clients (${SMM_COMPANIES.join(', ')}). Included in all revenue totals.</div>
+    </div>
+    <button class="btn btn-outline" style="font-size:10px;padding:4px 10px;white-space:nowrap" onclick="manageSMMCompanies()">+ Add Company</button>
   </div>
   <div class="stats-row" style="margin-bottom:20px">
     <div class="stat-card gold">
@@ -4178,13 +4134,24 @@ function renderFinSMM(smmRows, thisYear) {
   <!-- INDIVIDUAL SM EVENTS -->
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;margin-top:8px">
     <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Individual Events (${evSorted.length})</div>
-    <button class="btn btn-gold" style="font-size:11px;padding:6px 14px" onclick="openSMEventModal()">+ Add SM Event</button>
+    <button class="btn btn-gold" style="font-size:11px;padding:6px 14px" onclick="openSMEventModal()">+ Add SMM Event</button>
   </div>
-  ${evSorted.length === 0 ? '<div style="text-align:center;padding:24px;color:var(--muted);font-size:12px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r)">No individual events logged yet. Use the button above to add each Spilled Milk event after it happens.</div>' : '<div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--s1)"><th ' + thStyle + '>Date</th><th ' + thStyle + '>Event / Venue</th><th ' + thStyle + '>Contractor</th><th ' + thStyle + '>Hours</th><th ' + thStyle + '>Pay</th><th ' + thStyle + '>Actions</th></tr></thead><tbody>' + evSorted.map(r => { const pay = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0); return '<tr><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.date||r.eventDate||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;font-weight:500">' + (r.notes||r.client||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px">' + ([r.contractorName,r.contractorName2].filter(x=>x&&x!=='-').join(', ')||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.contractorHours||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:' + (pay>0?'var(--amber)':'var(--muted)') + ';font-weight:600">' + (pay>0?'$'+Math.round(pay).toLocaleString():'\u2014') + '</td><td style="padding:10px 12px"><button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openSMEventModal(' + JSON.stringify(JSON.stringify(r)) + ')">Edit</button></td></tr>'; }).join('') + '</tbody></table></div>'}
+  ${evSorted.length === 0 ? '<div style="text-align:center;padding:24px;color:var(--muted);font-size:12px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r)">No individual events logged yet. Use the button above to add each SMM event after it happens.</div>' : '<div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--s1)"><th ' + thStyle + '>Date</th><th ' + thStyle + '>Event / Venue</th><th ' + thStyle + '>Contractor</th><th ' + thStyle + '>Hours</th><th ' + thStyle + '>Pay</th><th ' + thStyle + '>Actions</th></tr></thead><tbody>' + evSorted.map(r => { const pay = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0); return '<tr><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.date||r.eventDate||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;font-weight:500">' + (r.notes||r.client||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px">' + ([r.contractorName,r.contractorName2].filter(x=>x&&x!=='-').join(', ')||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.contractorHours||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:' + (pay>0?'var(--amber)':'var(--muted)') + ';font-weight:600">' + (pay>0?'$'+Math.round(pay).toLocaleString():'\u2014') + '</td><td style="padding:10px 12px"><button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openSMEventModal(' + JSON.stringify(JSON.stringify(r)) + ')">Edit</button></td></tr>'; }).join('') + '</tbody></table></div>'}
   `;
 }
 
-// ── SPILLED MILK INDIVIDUAL EVENT MODAL ─────────────────────────
+function manageSMMCompanies() {
+  const name = prompt('Enter new SMM company name:');
+  if (!name || !name.trim()) return;
+  const trimmed = name.trim();
+  if (SMM_COMPANIES.includes(trimmed)) { toast('Company already exists'); return; }
+  SMM_COMPANIES.push(trimmed);
+  saveSMMCompanies();
+  toast('✓ Added ' + trimmed);
+  renderFinancials();
+}
+
+// ── SMM INDIVIDUAL EVENT MODAL ─────────────────────────
 function openSMEventModal(rowJson) {
   const row = rowJson ? (typeof rowJson === 'string' ? JSON.parse(rowJson) : rowJson) : null;
   const isEdit = !!row;
@@ -4200,7 +4167,13 @@ function openSMEventModal(rowJson) {
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
   modal.innerHTML = `
     <div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:28px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto">
-      <div style="font-family:'Cormorant',serif;font-size:22px;color:var(--cream);margin-bottom:20px">${isEdit?'Edit':'Add'} Spilled Milk Event</div>
+      <div style="font-family:'Cormorant',serif;font-size:22px;color:var(--cream);margin-bottom:20px">${isEdit?'Edit':'Add'} SMM Event</div>
+      <div class="field" style="margin-bottom:12px">
+        <label class="field-lbl">Company</label>
+        <select class="field-input" id="sm-company">
+          ${SMM_COMPANIES.map(c=>'<option value="'+c+'" '+(row?.client===c?'selected':'')+'>'+c+'</option>').join('')}
+        </select>
+      </div>
       <div class="field" style="margin-bottom:12px">
         <label class="field-lbl">Date</label>
         <input class="field-input" id="sm-date" type="date" value="${row?.date||row?.eventDate||new Date().toISOString().split('T')[0]}">
@@ -4249,6 +4222,7 @@ function openSMEventModal(rowJson) {
 }
 
 async function saveSMEvent(existingId) {
+  const company = document.getElementById('sm-company').value;
   const date   = document.getElementById('sm-date').value;
   const venue  = document.getElementById('sm-venue').value.trim();
   const type   = document.getElementById('sm-type').value;
@@ -4262,25 +4236,50 @@ async function saveSMEvent(existingId) {
   if (!venue) { toast('⚠ Event name required'); return; }
 
   const id = existingId || ('sm_' + Date.now());
+  const source = 'smm_' + company.toLowerCase().replace(/\s+/g,'_');
   const payload = {
     id, date,
-    client: 'Spilled Milk',
+    client: company,
     eventType: type,
     grossAmount: 0,
     hbFees: 0, travelFee: 0, deposit: 0, balanceDue: 0, paid: true,
     contractorName: c1, contractorHours: hours, contractorPay: pay1,
     contractorName2: c2||'', contractorHours2: '', contractorPay2: pay2,
-    source: 'spilled_milk',
+    source,
     notes: venue
   };
 
+  const ev = {
+    id,
+    inquiryId:     '',
+    client:        company,
+    email:         '',
+    eventDate:     date,
+    eventType:     type,
+    location:      venue,
+    package:       '',
+    packageHours:  hours||'',
+    contractValue: 0,
+    deposit:       0,
+    balance:       0,
+    status:        'upcoming',
+    notes:         venue,
+  };
+
   try {
-    await apiCall('saveFinancial', payload);
+    await Promise.all([
+      apiCall('saveFinancial', payload),
+      apiCall('saveEvent', ev),
+    ]);
+    DATA.events.push(ev);
+    DATA.historicalEvents = DATA.historicalEvents || [];
+    DATA.historicalEvents.push({...payload, contractValue: 0, netRevenue: 0});
     document.getElementById('sm-event-modal').remove();
-    toast('✓ SM event saved');
-    await syncData();
+    toast('✓ ' + company + ' event saved');
     window._finTab = 'smm';
     renderFinancials();
+    renderEvents();
+    renderDashboard();
   } catch(e) {
     toast('⚠ Error saving: ' + e.message);
   }
@@ -4598,8 +4597,9 @@ function calcPricing() {
   `;
 }
 
-// ── HONEYBOOK IMPORT DATA ──────────────────────────────────────
-const HB_DATA = [["hb_1", "2023-09-22", "Maddy Chavez", "Wedding", 1450.0, 48.39, 0.0, 1], ["hb_2", "2023-06-03", "Alyssa Bowling", "Wedding", 0.0, 0.0, 0.0, 0], ["hb_3", "2023-05-27", "Ciera Armwood", "Birthday Party", 0.0, 0.0, 0.0, 0], ["hb_4", "", "Alesa Andrew", "Wedding", 300.0, 9.29, 0.0, 1], ["hb_5", "2023-06-17", "Belinda Niang", "Wedding", 600.0, 6.05, 0.0, 1], ["hb_6", "2023-08-26", "Kawania Howerton", "Wedding", 600.0, 0, 0.0, 1], ["hb_7", "2023-10-01", "Takera Woodrum", "Wedding", 800.0, 23.7, 0.0, 1], ["hb_8", "2023-09-02", "Jamesa Alexander", "Wedding", 500.0, 17.18, 0.0, 1], ["hb_9", "2023-10-14", "Jamesa Alexander", "Wedding", 500.0, 16.34, 0.0, 1], ["hb_10", "2023-09-29", "Briana briana.nottingham12@gmail.com", "Wedding", 800.0, 26.54, 0.0, 1], ["hb_11", "2023-10-14", "Zekeera Belton", "Other", 575.0, 16.93, 0.0, 1], ["hb_12", "2023-12-29", "Jessica Chambers", "Birthday Party", 475.0, 0, 0.0, 1], ["hb_13", "2024-08-31", "Victoria Shorter", "Wedding", 800.0, 23.7, 0.0, 1], ["hb_14", "2024-02-03", "Cicely Procopio", "Wedding", 700.0, 23.14, 0.0, 1], ["hb_15", "2024-11-02", "Morgan Maharty", "Wedding", 1000.0, 806.05, 800.0, 0], ["hb_16", "2023-12-14", "Johanne jbelzorevents@gmail.com", "Birthday Party", 1680.0, 56.46, 0.0, 1], ["hb_17", "2024-01-06", "Tenicia tenicia21@gmail.com,", "Birthday Party", 475.0, 0, 0.0, 1], ["hb_18", "2023-12-28", "Ashley Young", "Wedding", 800.0, 6.05, 0.0, 1], ["hb_19", "2024-02-22", "Halima Adetona", "Other", 800.0, 0, 0.0, 1], ["hb_20", "2024-03-23", "Robin Mowson", "Wedding", 1875.0, 55.13, 0.0, 1], ["hb_21", "2024-03-09", "Michelle Kiefer", "Wedding", 1075.0, 0, 0.0, 1], ["hb_22", "2024-06-08", "Vy Pham", "Wedding", 975.0, 24.68, 0.0, 1], ["hb_23", "2024-04-06", "Napheissa Owens", "Wedding", 550.0, 0, 0.0, 1], ["hb_24", "2024-10-25", "Nisha Gupta", "Wedding", 1425.0, 21.38, 0.0, 1], ["hb_25", "2024-11-10", "Tanesha Johnson", "Wedding", 1075.0, 35.98, 0.0, 1], ["hb_26", "2024-09-08", "Haley Wilson", "Wedding", 1125.0, 0, 0.0, 1], ["hb_27", "2024-03-30", "Susan nostalgiaerentals@gmail.com", "Birthday Party", 500.0, 14.75, 0.0, 1], ["hb_28", "2024-04-07", "Kawania Howerton", "Other", 450.0, 13.3, 0.0, 1], ["hb_29", "2025-06-06", "Sammy Guanco", "Other", 600.0, 6.0, 0.0, 1], ["hb_30", "2024-08-10", "Amanda Victoria", "Wedding", 1375.0, 38.55, 0.0, 1], ["hb_31", "2024-10-20", "Elysse Vernon", "Wedding", 975.0, 0, 0.0, 1], ["hb_32", "2024-08-04", "Korede Falua", "Wedding", 1825.0, 54.98, 0.0, 1], ["hb_33", "2025-10-11", "Mariefred Evans", "Wedding", 1350.0, 34.31, 0.0, 1], ["hb_34", "2024-04-20", "Bellwether Events", "Wedding", 1075.0, 0, 0.0, 1], ["hb_35", "2024-06-21", "Edwin Hernandez", "Wedding", 1475.0, 1278.0, 1275.0, 0], ["hb_36", "2024-04-27", "Akbar Sayed", "Wedding", 1475.0, 49.49, 0.0, 1], ["hb_37", "2024-08-25", "Rosalyn Scriven", "Wedding", 875.0, 25.88, 0.0, 1], ["hb_38", "2024-08-14", "Taylor Goodrich", "Wedding", 200.0, 3.0, 0.0, 1], ["hb_39", "2024-05-04", "Lola Akingbade", "Wedding", 675.0, 0, 0.0, 1], ["hb_40", "2024-04-21", "Nicole Kwarteng", "Birthday Party", 775.0, 0, 0.0, 1], ["hb_41", "2024-04-21", "Ashley Brown", "Birthday Party", 300.0, 8.95, 0.0, 1], ["hb_42", "2024-05-04", "Ciera Armwood", "Birthday Party", 675.0, 0, 0.0, 1], ["hb_43", "2024-05-18", "Tiffany Hawkins", "Engagement Party", 600.0, 9.0, 0.0, 1], ["hb_44", "2024-06-13", "Melissa Williams", "Wedding", 600.0, 0, 0.0, 1], ["hb_45", "2024-05-04", "Stephanie Minick", "Other", 725.0, 23.99, 0.0, 1], ["hb_46", "2024-05-31", "Stephanie Minick", "Wedding", 1075.0, 36.73, 0.0, 1], ["hb_47", "2024-05-03", "Vivian Duri", "Other", 225.0, 0, 0.0, 1], ["hb_48", "2024-05-03", "Sarah Nickens", "Corporate Event", 400.0, 11.85, 0.0, 1], ["hb_49", "2024-10-25", "Catherine Chan", "Wedding", 1075.0, 31.68, 0.0, 1], ["hb_50", "2024-06-15", "Tabitha Roberts", "Wedding", 870.0, 0, 0.0, 1], ["hb_51", "2024-05-25", "Laura Held", "Wedding", 1300.0, 43.54, 0.0, 1], ["hb_52", "2024-09-28", "Tabitha Roberts", "Wedding", 1400.0, 47.03, 0.0, 1], ["hb_53", "2024-11-15", "Tabitha Roberts", "Wedding", 600.0, 0, 0.0, 1], ["hb_54", "2024-11-16", "Tabitha Roberts", "Wedding", 1000.0, 0, 0.0, 1], ["hb_55", "2024-06-01", "Amanda Victoria", "Other", 430.0, 0, 0.0, 1], ["hb_56", "2024-06-01", "Dee mydreampartyrentals@gmail.com", "Birthday Party", 650.0, 21.44, 0.0, 1], ["hb_57", "2024-06-12", "Briana briana.nottingham12@gmail.com", "Other", 350.0, 11.24, 0.0, 1], ["hb_58", "2024-06-29", "Napheissa Owens", "Wedding", 675.0, 23.13, 0.0, 1], ["hb_59", "2024-06-26", "Rachel Chadderdon", "Other", 0.0, 0.0, 0.0, 0], ["hb_60", "2024-06-18", "Th\u00e9r\u00e8se Clarke", "Wedding", 750.0, 24.84, 0.0, 1], ["hb_61", "2024-08-24", "Andrew Robotham", "Other", 700.0, 23.14, 0.0, 1], ["hb_62", "2024-08-31", "Morgan Maharty", "Other", 800.0, 27.47, 0.0, 1], ["hb_63", "2024-08-31", "KD Wedding", "Wedding", 1800.0, 58.54, 0.0, 1], ["hb_64", "2024-06-22", "Jamesa Alexander", "Wedding", 775.0, 11.63, 0.0, 1], ["hb_65", "2024-08-24", "Lola Akingbade", "Wedding", 600.0, 11.85, 0.0, 1], ["hb_66", "2024-09-28", "Bellwether Events", "Wedding", 1400.0, 0, 0.0, 1], ["hb_67", "2024-10-10", "Sarah Nickens", "Corporate Event", 800.0, 0, 0.0, 1], ["hb_68", "2024-07-06", "Jamesa Alexander", "Wedding", 625.0, 0, 425.0, 0], ["hb_69", "2024-07-20", "Jamesa Alexander", "Wedding", 550.0, 0, 0.0, 1], ["hb_70", "2024-08-31", "Jamesa Alexander", "Wedding", 600.0, 12.89, 0.0, 1], ["hb_71", "2024-09-28", "Kristin Barnhouse", "Wedding", 1675.0, 6.05, 0.0, 1], ["hb_72", "2024-08-22", "Siara Monet", "Other", 600.0, 0, 0.0, 1], ["hb_73", "2024-07-14", "Luxe Ambiance", "Birthday Party", 800.0, 26.54, 0.0, 1], ["hb_74", "2024-07-07", "Sarah Nickens", "Birthday Party", 250.0, 0, 0.0, 1], ["hb_75", "2024-11-09", "Molly Britzman", "Wedding", 1575.0, 47.77, 0.0, 1], ["hb_76", "2025-05-10", "Katie Hoyle", "Wedding", 1475.0, 48.49, 0.0, 1], ["hb_77", "2025-02-15", "Carly Napora", "Wedding", 1755.0, 39.95, 0.0, 1], ["hb_78", "2025-06-07", "Renee Plavnicky", "Wedding", 1680.0, 25.2, 0.0, 1], ["hb_79", "2025-06-07", "Sammy Guanco", "Family Event", 1507.5, 22.61, 0.0, 1], ["hb_80", "2024-08-17", "Heather Brugger", "Wedding", 1275.0, 0, 0.0, 1], ["hb_81", "2024-08-03", "Laura Held", "Wedding", 1175.0, 28.73, 0.0, 1], ["hb_82", "2025-08-30", "Betel Hailu", "Wedding", 2000.0, 44.25, 0.0, 1], ["hb_83", "2024-10-10", "Sharon Thomas", "Wedding", 2675.0, 1413.13, 1400.0, 0], ["hb_84", "2024-08-03", "Yodit Gebreyes", "Wedding", 800.0, 25.54, 0.0, 1], ["hb_85", "2024-07-28", "Napheissa Owens", "Corporate Event", 300.0, 10.29, 0.0, 1], ["hb_86", "2024-08-10", "Laura Held", "Wedding", 1100.0, 32.4, 0.0, 1], ["hb_87", "2024-09-14", "Napheissa Owens", "Wedding", 800.0, 0, 0.0, 1], ["hb_88", "2024-09-21", "Cicely Procopio", "Wedding", 1500.0, 51.18, 0.0, 1], ["hb_89", "2024-08-17", "Bahgi Solomon", "Birthday Party", 875.0, 28.09, 0.0, 1], ["hb_90", "2024-09-21", "Stephanie von", "Wedding", 1275.0, 41.69, 0.0, 1], ["hb_91", "2024-10-12", "Carter Purcell", "Wedding", 1275.0, 37.48, 0.0, 1], ["hb_92", "2025-09-26", "Alyssa Bartlett", "Wedding", 2475.0, 76.99, 0.0, 1], ["hb_93", "2024-11-02", "Amanda Linthicum", "Wedding", 1480.0, 31.57, 0.0, 1], ["hb_94", "2024-09-08", "Natasha Constantine", "Wedding", 1475.0, 43.03, 0.0, 1], ["hb_95", "2024-09-14", "Jessi thesentimentalfools@gmail.com", "Wedding", 800.0, 23.7, 0.0, 1], ["hb_96", "2024-10-05", "Jamesa Alexander", "Wedding", 700.0, 10.5, 0.0, 1], ["hb_97", "2025-05-02", "Karis Jackson", "Wedding", 2675.0, 78.33, 0.0, 1], ["hb_98", "2024-10-05", "Kawania Howerton", "Wedding", 1000.0, 0, 0.0, 1], ["hb_99", "2024-10-05", "Noelle Ahmad", "Birthday Party", 875.0, 25.88, 0.0, 1], ["hb_100", "2024-11-02", "Kyle Jeanette", "Wedding", 1000.0, 29.5, 0.0, 1], ["hb_101", "2025-03-22", "Caroline McGrath", "Wedding", 2000.0, 23.45, 0.0, 1], ["hb_102", "2024-12-06", "Andrea Nichol", "Wedding", 1955.0, 64.9, 0.0, 1], ["hb_103", "2024-10-26", "Jamesa Alexander", "Wedding", 1500.0, 47.68, 0.0, 1], ["hb_104", "2024-10-24", "Jamesa Alexander", "Corporate Event", 700.0, 4.5, 0.0, 1], ["hb_105", "2024-11-15", "Jamesa Alexander", "Wedding", 1500.0, 814.95, 800.0, 0], ["hb_106", "2024-10-23", "Natasha Noel", "Other", 675.0, 20.29, 0.0, 1], ["hb_107", "2025-01-04", "Jamesa Alexander", "Wedding", 1500.0, 0, 0.0, 1], ["hb_108", "2025-09-06", "Lizzie Park", "Wedding", 1500.0, 48.18, 0.0, 1], ["hb_109", "2024-10-13", "Candice candice@ideallyyoursdc.com", "Wedding", 700.0, 20.55, 0.0, 1], ["hb_110", "2025-05-17", "Mallory Jones", "Wedding", 1675.0, 43.48, 0.0, 1], ["hb_111", "2024-10-23", "Nisha Gupta", "Other", 875.0, 25.63, 0.0, 1], ["hb_112", "2024-09-22", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_113", "2024-10-12", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_114", "2024-11-09", "Laura Held", "Other", 800.0, 12.0, 0.0, 1], ["hb_115", "2024-11-23", "Luxe Ambiance", "Other", 875.0, 25.88, 0.0, 1], ["hb_116", "2024-10-26", "Nisha Gupta", "Wedding", 800.0, 23.45, 0.0, 1], ["hb_117", "2024-11-09", "Napheissa Owens", "Wedding", 575.0, 19.64, 0.0, 1], ["hb_118", "2025-03-16", "Sarah Nickens", "Wedding", 5000.0, 145.5, 0.0, 1], ["hb_119", "2024-12-15", "Alison Oko", "Other", 1000.0, 0, 0.0, 1], ["hb_120", "2025-06-14", "Courtney Lorey", "Wedding", 1600.0, 24.0, 0.0, 1], ["hb_121", "2024-12-15", "Candice candice@ideallyyoursdc.com", "Other", 800.0, 23.45, 0.0, 1], ["hb_122", "2025-01-25", "Lara Falusi", "Other", 800.0, 23.45, 0.0, 1], ["hb_123", "2025-01-04", "Lauren Dickens", "Other", 900.0, 26.35, 0.0, 1], ["hb_124", "2025-03-01", "Alex Pare", "Wedding", 800.0, 25.54, 0.0, 1], ["hb_125", "2025-07-12", "Erin Treichler", "Wedding", 2475.0, 81.58, 0.0, 1], ["hb_126", "2025-06-19", "Christine Godsey", "Wedding", 2550.0, 17.65, 0.0, 1], ["hb_127", "2025-05-10", "Brielle Davis", "Wedding", 1800.0, 52.45, 0.0, 1], ["hb_128", "2025-10-04", "Vicroria Smith", "Wedding", 1675.0, 49.33, 0.0, 1], ["hb_129", "2025-04-26", "Jamesa Alexander", "Wedding", 1600.0, 46.9, 0.0, 1], ["hb_130", "2025-06-28", "Brittney and", "Other", 750.0, 22.25, 0.0, 1], ["hb_131", "2025-09-06", "Tiffany Tellez", "Wedding", 2550.0, 84.13, 0.0, 1], ["hb_132", "2025-03-15", "Elizabeth Duncan", "Other", 1000.0, 29.25, 0.0, 1], ["hb_133", "2025-03-12", "Spilled Milk", "Wedding", 2400.0, 79.03, 0.0, 1], ["hb_134", "2025-08-02", "Franklin and", "Wedding", 2075.0, 46.43, 0.0, 1], ["hb_135", "2025-04-04", "Candice candice@ideallyyoursdc.com", "Wedding", 400.0, 0, 0.0, 1], ["hb_136", "2025-03-24", "Lauren Dickens", "Other", 1000.0, 611.85, 600.0, 0], ["hb_137", "2025-05-16", "Yodit Gebreyes", "Wedding", 1080.0, 19.97, 0.0, 1], ["hb_138", "2025-04-05", "LPE team", "Other", 600.0, 17.65, 0.0, 1], ["hb_139", "2025-04-03", "Spilled Milk", "Wedding", 3800.0, 129.47, 0.0, 1], ["hb_140", "2025-06-20", "Yodit Gebreyes", "Wedding", 1620.0, 52.51, 0.0, 1], ["hb_141", "2025-09-12", "Yodit Gebreyes", "Wedding", 1800.0, 60.7, 0.0, 1], ["hb_142", "2025-04-24", "Yodit Gebreyes", "Other", 450.0, 13.3, 0.0, 1], ["hb_143", "2025-06-21", "Madelon Maschmeier", "Wedding", 2600.0, 75.9, 0.0, 1], ["hb_144", "2025-04-26", "Laura Held", "Other", 800.0, 12.0, 0.0, 1], ["hb_145", "2025-05-15", "Liz Debarros", "Corporate Event", 1000.0, 0, 0.0, 1], ["hb_146", "2025-04-25", "Melissa Williams", "Corporate Event", 500.0, 14.75, 0.0, 1], ["hb_147", "2025-05-03", "Laura Held", "Other", 1700.0, 49.55, 0.0, 1], ["hb_148", "2025-04-27", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_149", "2025-05-10", "Bellwether Events", "Wedding", 1600.0, 0, 0.0, 1], ["hb_150", "2025-06-12", "Cest Belle", "Birthday Party", 800.0, 23.45, 0.0, 1], ["hb_151", "2025-05-17", "Laura Held", "Other", 800.0, 12.0, 0.0, 1], ["hb_152", "2025-05-03", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_153", "2026-08-22", "Dalis Graham", "Wedding", 1800.0, 52.7, 0.0, 1], ["hb_154", "2025-05-24", "Jonathan Tate", "Corporate Event", 1200.0, 35.05, 0.0, 1], ["hb_155", "2025-06-07", "Candice candice@ideallyyoursdc.com", "Wedding", 1200.0, 0, 0.0, 1], ["hb_156", "2025-06-08", "Nicole Kwarteng", "Birthday Party", 1000.0, 0, 0.0, 1], ["hb_157", "2025-05-25", "Laura Held", "Wedding", 1800.0, 0, 0.0, 1], ["hb_158", "2025-05-25", "Sarah Nickens", "Wedding", 1200.0, 40.89, 0.0, 1], ["hb_159", "2025-05-29", "Priscilla foreverus0917@gmail.com", "Wedding", 1050.0, 30.7, 0.0, 1], ["hb_160", "2026-03-28", "Jamesa Alexander", "Wedding", 800.0, 27.29, 0.0, 1], ["hb_161", "2026-05-29", "Grady Martin", "Wedding", 2650.0, 1053.19, 1000.0, 0], ["hb_162", "2025-06-27", "Laura Held", "Wedding", 1600.0, 46.65, 0.0, 1], ["hb_163", "2025-08-16", "Madelon Maschmeier", "Wedding", 2600.0, 84.33, 0.0, 1], ["hb_164", "2025-08-16", "Andrew Robotham", "Other", 1300.0, 44.29, 0.0, 1], ["hb_165", "2025-07-02", "Spilled Milk", "Other", 2300.0, 78.38, 0.0, 1], ["hb_166", "2025-10-17", "Abby Davison", "Wedding", 2450.0, 78.64, 0.0, 1], ["hb_167", "2025-10-11", "Roshni Ghosh", "Wedding", 2550.0, 82.04, 0.0, 1], ["hb_168", "2026-05-28", "Monica San", "Wedding", 2800.0, 1155.8, 1100.0, 0], ["hb_169", "2025-10-18", "Gabby Burnett", "Wedding", 2200.0, 70.14, 0.0, 1], ["hb_170", "2025-08-23", "Laura Held", "Wedding", 1200.0, 40.89, 0.0, 1], ["hb_171", "2025-10-04", "Laura Held", "Wedding", 1800.0, 0, 0.0, 1], ["hb_172", "2025-08-04", "Noelle Ahmad", "Other", 400.0, 11.85, 0.0, 1], ["hb_173", "2026-09-06", "Kiah McSwain", "Wedding", 1800.0, 58.54, 0.0, 1], ["hb_174", "2025-09-13", "Alyssa hello@allthedeets.me", "Wedding", 1400.0, 44.94, 0.0, 1], ["hb_175", "2025-11-16", "Candice candice@ideallyyoursdc.com", "Wedding", 600.0, 0, 0.0, 1], ["hb_176", "2025-08-07", "Laura Held", "Wedding", 1200.0, 35.05, 0.0, 1], ["hb_177", "2025-07-24", "Calsin Hoyle", "Other", 400.0, 11.85, 0.0, 1], ["hb_178", "2025-08-25", "Spilled Milk", "Other", 4200.0, 142.98, 0.0, 1], ["hb_179", "2026-02-14", "Sarah Kazemburg", "Wedding", 2000.0, 71.93, 0.0, 1], ["hb_180", "2025-11-07", "Madelon Maschmeier", "Wedding", 2200.0, 0, 0.0, 1], ["hb_181", "2025-11-08", "Edwin Hernandez", "Wedding", 1800.0, 60.7, 0.0, 1], ["hb_182", "2026-03-07", "Paige Thiele", "Wedding", 2400.0, 80.1, 0.0, 1], ["hb_183", "2025-09-13", "Gabrielle Baldwin", "Wedding", 1000.0, 39.25, 0.0, 1], ["hb_184", "2025-09-04", "Melanie Boothe", "Other", 800.0, 31.45, 0.0, 1], ["hb_185", "2025-09-06", "Julie Viera", "Wedding", 1400.0, 54.85, 0.0, 1], ["hb_186", "2025-08-28", "Halima Adetona", "Other", 1800.0, 0, 0.0, 1], ["hb_187", "2026-08-07", "Brigette Pheloung", "Wedding", 0.0, 0.0, 0.0, 0], ["hb_188", "2025-09-27", "Frank and", "Wedding", 2200.0, 0, 0.0, 1], ["hb_189", "2026-05-02", "Arleigh Banner", "Wedding", 2400.0, 1439.25, 1400.0, 0], ["hb_190", "2026-10-10", "Madelon Maschmeier", "Wedding", 1950.0, 984.09, 950.0, 0], ["hb_191", "2026-10-10", "Olivia Rinaldi", "Wedding", 2800.0, 1839.25, 1800.0, 0], ["hb_192", "", "Abby Richards", "Wedding", 525.0, 20.73, 0.0, 1], ["hb_193", "2025-10-18", "Laura Held", "Birthday Party", 1600.0, 62.65, 0.0, 1], ["hb_194", "2025-10-08", "Spilled Milk", "Other", 2800.0, 123.29, 0.0, 1], ["hb_195", "2025-10-11", "Spilled Milk", "Other", 1800.0, 79.29, 0.0, 1], ["hb_196", "2025-11-15", "Emma Arletta", "Wedding", 2250.0, 65.75, 0.0, 1], ["hb_197", "2025-10-15", "Jamesa Alexander", "Corporate Event", 600.0, 20.49, 0.0, 1], ["hb_198", "2025-10-31", "Alex Moreau", "Wedding", 2000.0, 58.25, 0.0, 1], ["hb_199", "", "Spilled Milk", "Other", 4600.0, 156.49, 0.0, 1], ["hb_200", "2026-07-11", "Lauren Pichney", "Wedding", 2800.0, 1829.25, 1800.0, 0], ["hb_201", "2025-11-04", "Sarah Nickens", "Corporate Event", 1200.0, 0, 0.0, 1], ["hb_202", "2025-11-07", "Natasha Noel", "Other", 1200.0, 0, 0.0, 1], ["hb_203", "2026-02-14", "Maddie Richter", "Wedding", 1200.0, 38.14, 0.0, 1], ["hb_204", "2025-12-20", "Laura Held", "Wedding", 2200.0, 33.0, 0.0, 1], ["hb_205", "2025-12-06", "Lola Akingbade", "Birthday Party", 500.0, 14.75, 0.0, 1], ["hb_206", "2025-12-10", "Daniela McInerney", "Other", 2000.0, 0, 0.0, 1], ["hb_207", "2026-05-16", "Patrick Scally", "Wedding", 2000.0, 1029.25, 1000.0, 0], ["hb_208", "2026-01-15", "Caitlyn Bryant", "Other", 1000.0, 29.25, 0.0, 1], ["hb_209", "", "Spilled Milk", "Wedding", 1200.0, 40.89, 0.0, 1], ["hb_210", "", "Spilled Milk", "Wedding", 4600.0, 156.49, 0.0, 1], ["hb_211", "", "Spilled Milk", "Wedding", 7400.0, 251.78, 0.0, 1], ["hb_212", "", "Spilled Milk", "Wedding", 4600.0, 156.49, 0.0, 1], ["hb_213", "2026-01-31", "Candice candice@ideallyyoursdc.com", "Wedding", 800.0, 0, 0.0, 1]];
+// ── HONEYBOOK IMPORT DATA (lazy-loaded on first use) ──────────────────────────────────────
+let _hbDataCache = null;
+function getHBData() { if (!_hbDataCache) _hbDataCache = [["hb_1", "2023-09-22", "Maddy Chavez", "Wedding", 1450.0, 48.39, 0.0, 1], ["hb_2", "2023-06-03", "Alyssa Bowling", "Wedding", 0.0, 0.0, 0.0, 0], ["hb_3", "2023-05-27", "Ciera Armwood", "Birthday Party", 0.0, 0.0, 0.0, 0], ["hb_4", "", "Alesa Andrew", "Wedding", 300.0, 9.29, 0.0, 1], ["hb_5", "2023-06-17", "Belinda Niang", "Wedding", 600.0, 6.05, 0.0, 1], ["hb_6", "2023-08-26", "Kawania Howerton", "Wedding", 600.0, 0, 0.0, 1], ["hb_7", "2023-10-01", "Takera Woodrum", "Wedding", 800.0, 23.7, 0.0, 1], ["hb_8", "2023-09-02", "Jamesa Alexander", "Wedding", 500.0, 17.18, 0.0, 1], ["hb_9", "2023-10-14", "Jamesa Alexander", "Wedding", 500.0, 16.34, 0.0, 1], ["hb_10", "2023-09-29", "Briana briana.nottingham12@gmail.com", "Wedding", 800.0, 26.54, 0.0, 1], ["hb_11", "2023-10-14", "Zekeera Belton", "Other", 575.0, 16.93, 0.0, 1], ["hb_12", "2023-12-29", "Jessica Chambers", "Birthday Party", 475.0, 0, 0.0, 1], ["hb_13", "2024-08-31", "Victoria Shorter", "Wedding", 800.0, 23.7, 0.0, 1], ["hb_14", "2024-02-03", "Cicely Procopio", "Wedding", 700.0, 23.14, 0.0, 1], ["hb_15", "2024-11-02", "Morgan Maharty", "Wedding", 1000.0, 806.05, 800.0, 0], ["hb_16", "2023-12-14", "Johanne jbelzorevents@gmail.com", "Birthday Party", 1680.0, 56.46, 0.0, 1], ["hb_17", "2024-01-06", "Tenicia tenicia21@gmail.com,", "Birthday Party", 475.0, 0, 0.0, 1], ["hb_18", "2023-12-28", "Ashley Young", "Wedding", 800.0, 6.05, 0.0, 1], ["hb_19", "2024-02-22", "Halima Adetona", "Other", 800.0, 0, 0.0, 1], ["hb_20", "2024-03-23", "Robin Mowson", "Wedding", 1875.0, 55.13, 0.0, 1], ["hb_21", "2024-03-09", "Michelle Kiefer", "Wedding", 1075.0, 0, 0.0, 1], ["hb_22", "2024-06-08", "Vy Pham", "Wedding", 975.0, 24.68, 0.0, 1], ["hb_23", "2024-04-06", "Napheissa Owens", "Wedding", 550.0, 0, 0.0, 1], ["hb_24", "2024-10-25", "Nisha Gupta", "Wedding", 1425.0, 21.38, 0.0, 1], ["hb_25", "2024-11-10", "Tanesha Johnson", "Wedding", 1075.0, 35.98, 0.0, 1], ["hb_26", "2024-09-08", "Haley Wilson", "Wedding", 1125.0, 0, 0.0, 1], ["hb_27", "2024-03-30", "Susan nostalgiaerentals@gmail.com", "Birthday Party", 500.0, 14.75, 0.0, 1], ["hb_28", "2024-04-07", "Kawania Howerton", "Other", 450.0, 13.3, 0.0, 1], ["hb_29", "2025-06-06", "Sammy Guanco", "Other", 600.0, 6.0, 0.0, 1], ["hb_30", "2024-08-10", "Amanda Victoria", "Wedding", 1375.0, 38.55, 0.0, 1], ["hb_31", "2024-10-20", "Elysse Vernon", "Wedding", 975.0, 0, 0.0, 1], ["hb_32", "2024-08-04", "Korede Falua", "Wedding", 1825.0, 54.98, 0.0, 1], ["hb_33", "2025-10-11", "Mariefred Evans", "Wedding", 1350.0, 34.31, 0.0, 1], ["hb_34", "2024-04-20", "Bellwether Events", "Wedding", 1075.0, 0, 0.0, 1], ["hb_35", "2024-06-21", "Edwin Hernandez", "Wedding", 1475.0, 1278.0, 1275.0, 0], ["hb_36", "2024-04-27", "Akbar Sayed", "Wedding", 1475.0, 49.49, 0.0, 1], ["hb_37", "2024-08-25", "Rosalyn Scriven", "Wedding", 875.0, 25.88, 0.0, 1], ["hb_38", "2024-08-14", "Taylor Goodrich", "Wedding", 200.0, 3.0, 0.0, 1], ["hb_39", "2024-05-04", "Lola Akingbade", "Wedding", 675.0, 0, 0.0, 1], ["hb_40", "2024-04-21", "Nicole Kwarteng", "Birthday Party", 775.0, 0, 0.0, 1], ["hb_41", "2024-04-21", "Ashley Brown", "Birthday Party", 300.0, 8.95, 0.0, 1], ["hb_42", "2024-05-04", "Ciera Armwood", "Birthday Party", 675.0, 0, 0.0, 1], ["hb_43", "2024-05-18", "Tiffany Hawkins", "Engagement Party", 600.0, 9.0, 0.0, 1], ["hb_44", "2024-06-13", "Melissa Williams", "Wedding", 600.0, 0, 0.0, 1], ["hb_45", "2024-05-04", "Stephanie Minick", "Other", 725.0, 23.99, 0.0, 1], ["hb_46", "2024-05-31", "Stephanie Minick", "Wedding", 1075.0, 36.73, 0.0, 1], ["hb_47", "2024-05-03", "Vivian Duri", "Other", 225.0, 0, 0.0, 1], ["hb_48", "2024-05-03", "Sarah Nickens", "Corporate Event", 400.0, 11.85, 0.0, 1], ["hb_49", "2024-10-25", "Catherine Chan", "Wedding", 1075.0, 31.68, 0.0, 1], ["hb_50", "2024-06-15", "Tabitha Roberts", "Wedding", 870.0, 0, 0.0, 1], ["hb_51", "2024-05-25", "Laura Held", "Wedding", 1300.0, 43.54, 0.0, 1], ["hb_52", "2024-09-28", "Tabitha Roberts", "Wedding", 1400.0, 47.03, 0.0, 1], ["hb_53", "2024-11-15", "Tabitha Roberts", "Wedding", 600.0, 0, 0.0, 1], ["hb_54", "2024-11-16", "Tabitha Roberts", "Wedding", 1000.0, 0, 0.0, 1], ["hb_55", "2024-06-01", "Amanda Victoria", "Other", 430.0, 0, 0.0, 1], ["hb_56", "2024-06-01", "Dee mydreampartyrentals@gmail.com", "Birthday Party", 650.0, 21.44, 0.0, 1], ["hb_57", "2024-06-12", "Briana briana.nottingham12@gmail.com", "Other", 350.0, 11.24, 0.0, 1], ["hb_58", "2024-06-29", "Napheissa Owens", "Wedding", 675.0, 23.13, 0.0, 1], ["hb_59", "2024-06-26", "Rachel Chadderdon", "Other", 0.0, 0.0, 0.0, 0], ["hb_60", "2024-06-18", "Th\u00e9r\u00e8se Clarke", "Wedding", 750.0, 24.84, 0.0, 1], ["hb_61", "2024-08-24", "Andrew Robotham", "Other", 700.0, 23.14, 0.0, 1], ["hb_62", "2024-08-31", "Morgan Maharty", "Other", 800.0, 27.47, 0.0, 1], ["hb_63", "2024-08-31", "KD Wedding", "Wedding", 1800.0, 58.54, 0.0, 1], ["hb_64", "2024-06-22", "Jamesa Alexander", "Wedding", 775.0, 11.63, 0.0, 1], ["hb_65", "2024-08-24", "Lola Akingbade", "Wedding", 600.0, 11.85, 0.0, 1], ["hb_66", "2024-09-28", "Bellwether Events", "Wedding", 1400.0, 0, 0.0, 1], ["hb_67", "2024-10-10", "Sarah Nickens", "Corporate Event", 800.0, 0, 0.0, 1], ["hb_68", "2024-07-06", "Jamesa Alexander", "Wedding", 625.0, 0, 425.0, 0], ["hb_69", "2024-07-20", "Jamesa Alexander", "Wedding", 550.0, 0, 0.0, 1], ["hb_70", "2024-08-31", "Jamesa Alexander", "Wedding", 600.0, 12.89, 0.0, 1], ["hb_71", "2024-09-28", "Kristin Barnhouse", "Wedding", 1675.0, 6.05, 0.0, 1], ["hb_72", "2024-08-22", "Siara Monet", "Other", 600.0, 0, 0.0, 1], ["hb_73", "2024-07-14", "Luxe Ambiance", "Birthday Party", 800.0, 26.54, 0.0, 1], ["hb_74", "2024-07-07", "Sarah Nickens", "Birthday Party", 250.0, 0, 0.0, 1], ["hb_75", "2024-11-09", "Molly Britzman", "Wedding", 1575.0, 47.77, 0.0, 1], ["hb_76", "2025-05-10", "Katie Hoyle", "Wedding", 1475.0, 48.49, 0.0, 1], ["hb_77", "2025-02-15", "Carly Napora", "Wedding", 1755.0, 39.95, 0.0, 1], ["hb_78", "2025-06-07", "Renee Plavnicky", "Wedding", 1680.0, 25.2, 0.0, 1], ["hb_79", "2025-06-07", "Sammy Guanco", "Family Event", 1507.5, 22.61, 0.0, 1], ["hb_80", "2024-08-17", "Heather Brugger", "Wedding", 1275.0, 0, 0.0, 1], ["hb_81", "2024-08-03", "Laura Held", "Wedding", 1175.0, 28.73, 0.0, 1], ["hb_82", "2025-08-30", "Betel Hailu", "Wedding", 2000.0, 44.25, 0.0, 1], ["hb_83", "2024-10-10", "Sharon Thomas", "Wedding", 2675.0, 1413.13, 1400.0, 0], ["hb_84", "2024-08-03", "Yodit Gebreyes", "Wedding", 800.0, 25.54, 0.0, 1], ["hb_85", "2024-07-28", "Napheissa Owens", "Corporate Event", 300.0, 10.29, 0.0, 1], ["hb_86", "2024-08-10", "Laura Held", "Wedding", 1100.0, 32.4, 0.0, 1], ["hb_87", "2024-09-14", "Napheissa Owens", "Wedding", 800.0, 0, 0.0, 1], ["hb_88", "2024-09-21", "Cicely Procopio", "Wedding", 1500.0, 51.18, 0.0, 1], ["hb_89", "2024-08-17", "Bahgi Solomon", "Birthday Party", 875.0, 28.09, 0.0, 1], ["hb_90", "2024-09-21", "Stephanie von", "Wedding", 1275.0, 41.69, 0.0, 1], ["hb_91", "2024-10-12", "Carter Purcell", "Wedding", 1275.0, 37.48, 0.0, 1], ["hb_92", "2025-09-26", "Alyssa Bartlett", "Wedding", 2475.0, 76.99, 0.0, 1], ["hb_93", "2024-11-02", "Amanda Linthicum", "Wedding", 1480.0, 31.57, 0.0, 1], ["hb_94", "2024-09-08", "Natasha Constantine", "Wedding", 1475.0, 43.03, 0.0, 1], ["hb_95", "2024-09-14", "Jessi thesentimentalfools@gmail.com", "Wedding", 800.0, 23.7, 0.0, 1], ["hb_96", "2024-10-05", "Jamesa Alexander", "Wedding", 700.0, 10.5, 0.0, 1], ["hb_97", "2025-05-02", "Karis Jackson", "Wedding", 2675.0, 78.33, 0.0, 1], ["hb_98", "2024-10-05", "Kawania Howerton", "Wedding", 1000.0, 0, 0.0, 1], ["hb_99", "2024-10-05", "Noelle Ahmad", "Birthday Party", 875.0, 25.88, 0.0, 1], ["hb_100", "2024-11-02", "Kyle Jeanette", "Wedding", 1000.0, 29.5, 0.0, 1], ["hb_101", "2025-03-22", "Caroline McGrath", "Wedding", 2000.0, 23.45, 0.0, 1], ["hb_102", "2024-12-06", "Andrea Nichol", "Wedding", 1955.0, 64.9, 0.0, 1], ["hb_103", "2024-10-26", "Jamesa Alexander", "Wedding", 1500.0, 47.68, 0.0, 1], ["hb_104", "2024-10-24", "Jamesa Alexander", "Corporate Event", 700.0, 4.5, 0.0, 1], ["hb_105", "2024-11-15", "Jamesa Alexander", "Wedding", 1500.0, 814.95, 800.0, 0], ["hb_106", "2024-10-23", "Natasha Noel", "Other", 675.0, 20.29, 0.0, 1], ["hb_107", "2025-01-04", "Jamesa Alexander", "Wedding", 1500.0, 0, 0.0, 1], ["hb_108", "2025-09-06", "Lizzie Park", "Wedding", 1500.0, 48.18, 0.0, 1], ["hb_109", "2024-10-13", "Candice candice@ideallyyoursdc.com", "Wedding", 700.0, 20.55, 0.0, 1], ["hb_110", "2025-05-17", "Mallory Jones", "Wedding", 1675.0, 43.48, 0.0, 1], ["hb_111", "2024-10-23", "Nisha Gupta", "Other", 875.0, 25.63, 0.0, 1], ["hb_112", "2024-09-22", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_113", "2024-10-12", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_114", "2024-11-09", "Laura Held", "Other", 800.0, 12.0, 0.0, 1], ["hb_115", "2024-11-23", "Luxe Ambiance", "Other", 875.0, 25.88, 0.0, 1], ["hb_116", "2024-10-26", "Nisha Gupta", "Wedding", 800.0, 23.45, 0.0, 1], ["hb_117", "2024-11-09", "Napheissa Owens", "Wedding", 575.0, 19.64, 0.0, 1], ["hb_118", "2025-03-16", "Sarah Nickens", "Wedding", 5000.0, 145.5, 0.0, 1], ["hb_119", "2024-12-15", "Alison Oko", "Other", 1000.0, 0, 0.0, 1], ["hb_120", "2025-06-14", "Courtney Lorey", "Wedding", 1600.0, 24.0, 0.0, 1], ["hb_121", "2024-12-15", "Candice candice@ideallyyoursdc.com", "Other", 800.0, 23.45, 0.0, 1], ["hb_122", "2025-01-25", "Lara Falusi", "Other", 800.0, 23.45, 0.0, 1], ["hb_123", "2025-01-04", "Lauren Dickens", "Other", 900.0, 26.35, 0.0, 1], ["hb_124", "2025-03-01", "Alex Pare", "Wedding", 800.0, 25.54, 0.0, 1], ["hb_125", "2025-07-12", "Erin Treichler", "Wedding", 2475.0, 81.58, 0.0, 1], ["hb_126", "2025-06-19", "Christine Godsey", "Wedding", 2550.0, 17.65, 0.0, 1], ["hb_127", "2025-05-10", "Brielle Davis", "Wedding", 1800.0, 52.45, 0.0, 1], ["hb_128", "2025-10-04", "Vicroria Smith", "Wedding", 1675.0, 49.33, 0.0, 1], ["hb_129", "2025-04-26", "Jamesa Alexander", "Wedding", 1600.0, 46.9, 0.0, 1], ["hb_130", "2025-06-28", "Brittney and", "Other", 750.0, 22.25, 0.0, 1], ["hb_131", "2025-09-06", "Tiffany Tellez", "Wedding", 2550.0, 84.13, 0.0, 1], ["hb_132", "2025-03-15", "Elizabeth Duncan", "Other", 1000.0, 29.25, 0.0, 1], ["hb_133", "2025-03-12", "Spilled Milk", "Wedding", 2400.0, 79.03, 0.0, 1], ["hb_134", "2025-08-02", "Franklin and", "Wedding", 2075.0, 46.43, 0.0, 1], ["hb_135", "2025-04-04", "Candice candice@ideallyyoursdc.com", "Wedding", 400.0, 0, 0.0, 1], ["hb_136", "2025-03-24", "Lauren Dickens", "Other", 1000.0, 611.85, 600.0, 0], ["hb_137", "2025-05-16", "Yodit Gebreyes", "Wedding", 1080.0, 19.97, 0.0, 1], ["hb_138", "2025-04-05", "LPE team", "Other", 600.0, 17.65, 0.0, 1], ["hb_139", "2025-04-03", "Spilled Milk", "Wedding", 3800.0, 129.47, 0.0, 1], ["hb_140", "2025-06-20", "Yodit Gebreyes", "Wedding", 1620.0, 52.51, 0.0, 1], ["hb_141", "2025-09-12", "Yodit Gebreyes", "Wedding", 1800.0, 60.7, 0.0, 1], ["hb_142", "2025-04-24", "Yodit Gebreyes", "Other", 450.0, 13.3, 0.0, 1], ["hb_143", "2025-06-21", "Madelon Maschmeier", "Wedding", 2600.0, 75.9, 0.0, 1], ["hb_144", "2025-04-26", "Laura Held", "Other", 800.0, 12.0, 0.0, 1], ["hb_145", "2025-05-15", "Liz Debarros", "Corporate Event", 1000.0, 0, 0.0, 1], ["hb_146", "2025-04-25", "Melissa Williams", "Corporate Event", 500.0, 14.75, 0.0, 1], ["hb_147", "2025-05-03", "Laura Held", "Other", 1700.0, 49.55, 0.0, 1], ["hb_148", "2025-04-27", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_149", "2025-05-10", "Bellwether Events", "Wedding", 1600.0, 0, 0.0, 1], ["hb_150", "2025-06-12", "Cest Belle", "Birthday Party", 800.0, 23.45, 0.0, 1], ["hb_151", "2025-05-17", "Laura Held", "Other", 800.0, 12.0, 0.0, 1], ["hb_152", "2025-05-03", "Laura Held", "Wedding", 1100.0, 16.5, 0.0, 1], ["hb_153", "2026-08-22", "Dalis Graham", "Wedding", 1800.0, 52.7, 0.0, 1], ["hb_154", "2025-05-24", "Jonathan Tate", "Corporate Event", 1200.0, 35.05, 0.0, 1], ["hb_155", "2025-06-07", "Candice candice@ideallyyoursdc.com", "Wedding", 1200.0, 0, 0.0, 1], ["hb_156", "2025-06-08", "Nicole Kwarteng", "Birthday Party", 1000.0, 0, 0.0, 1], ["hb_157", "2025-05-25", "Laura Held", "Wedding", 1800.0, 0, 0.0, 1], ["hb_158", "2025-05-25", "Sarah Nickens", "Wedding", 1200.0, 40.89, 0.0, 1], ["hb_159", "2025-05-29", "Priscilla foreverus0917@gmail.com", "Wedding", 1050.0, 30.7, 0.0, 1], ["hb_160", "2026-03-28", "Jamesa Alexander", "Wedding", 800.0, 27.29, 0.0, 1], ["hb_161", "2026-05-29", "Grady Martin", "Wedding", 2650.0, 1053.19, 1000.0, 0], ["hb_162", "2025-06-27", "Laura Held", "Wedding", 1600.0, 46.65, 0.0, 1], ["hb_163", "2025-08-16", "Madelon Maschmeier", "Wedding", 2600.0, 84.33, 0.0, 1], ["hb_164", "2025-08-16", "Andrew Robotham", "Other", 1300.0, 44.29, 0.0, 1], ["hb_165", "2025-07-02", "Spilled Milk", "Other", 2300.0, 78.38, 0.0, 1], ["hb_166", "2025-10-17", "Abby Davison", "Wedding", 2450.0, 78.64, 0.0, 1], ["hb_167", "2025-10-11", "Roshni Ghosh", "Wedding", 2550.0, 82.04, 0.0, 1], ["hb_168", "2026-05-28", "Monica San", "Wedding", 2800.0, 1155.8, 1100.0, 0], ["hb_169", "2025-10-18", "Gabby Burnett", "Wedding", 2200.0, 70.14, 0.0, 1], ["hb_170", "2025-08-23", "Laura Held", "Wedding", 1200.0, 40.89, 0.0, 1], ["hb_171", "2025-10-04", "Laura Held", "Wedding", 1800.0, 0, 0.0, 1], ["hb_172", "2025-08-04", "Noelle Ahmad", "Other", 400.0, 11.85, 0.0, 1], ["hb_173", "2026-09-06", "Kiah McSwain", "Wedding", 1800.0, 58.54, 0.0, 1], ["hb_174", "2025-09-13", "Alyssa hello@allthedeets.me", "Wedding", 1400.0, 44.94, 0.0, 1], ["hb_175", "2025-11-16", "Candice candice@ideallyyoursdc.com", "Wedding", 600.0, 0, 0.0, 1], ["hb_176", "2025-08-07", "Laura Held", "Wedding", 1200.0, 35.05, 0.0, 1], ["hb_177", "2025-07-24", "Calsin Hoyle", "Other", 400.0, 11.85, 0.0, 1], ["hb_178", "2025-08-25", "Spilled Milk", "Other", 4200.0, 142.98, 0.0, 1], ["hb_179", "2026-02-14", "Sarah Kazemburg", "Wedding", 2000.0, 71.93, 0.0, 1], ["hb_180", "2025-11-07", "Madelon Maschmeier", "Wedding", 2200.0, 0, 0.0, 1], ["hb_181", "2025-11-08", "Edwin Hernandez", "Wedding", 1800.0, 60.7, 0.0, 1], ["hb_182", "2026-03-07", "Paige Thiele", "Wedding", 2400.0, 80.1, 0.0, 1], ["hb_183", "2025-09-13", "Gabrielle Baldwin", "Wedding", 1000.0, 39.25, 0.0, 1], ["hb_184", "2025-09-04", "Melanie Boothe", "Other", 800.0, 31.45, 0.0, 1], ["hb_185", "2025-09-06", "Julie Viera", "Wedding", 1400.0, 54.85, 0.0, 1], ["hb_186", "2025-08-28", "Halima Adetona", "Other", 1800.0, 0, 0.0, 1], ["hb_187", "2026-08-07", "Brigette Pheloung", "Wedding", 0.0, 0.0, 0.0, 0], ["hb_188", "2025-09-27", "Frank and", "Wedding", 2200.0, 0, 0.0, 1], ["hb_189", "2026-05-02", "Arleigh Banner", "Wedding", 2400.0, 1439.25, 1400.0, 0], ["hb_190", "2026-10-10", "Madelon Maschmeier", "Wedding", 1950.0, 984.09, 950.0, 0], ["hb_191", "2026-10-10", "Olivia Rinaldi", "Wedding", 2800.0, 1839.25, 1800.0, 0], ["hb_192", "", "Abby Richards", "Wedding", 525.0, 20.73, 0.0, 1], ["hb_193", "2025-10-18", "Laura Held", "Birthday Party", 1600.0, 62.65, 0.0, 1], ["hb_194", "2025-10-08", "Spilled Milk", "Other", 2800.0, 123.29, 0.0, 1], ["hb_195", "2025-10-11", "Spilled Milk", "Other", 1800.0, 79.29, 0.0, 1], ["hb_196", "2025-11-15", "Emma Arletta", "Wedding", 2250.0, 65.75, 0.0, 1], ["hb_197", "2025-10-15", "Jamesa Alexander", "Corporate Event", 600.0, 20.49, 0.0, 1], ["hb_198", "2025-10-31", "Alex Moreau", "Wedding", 2000.0, 58.25, 0.0, 1], ["hb_199", "", "Spilled Milk", "Other", 4600.0, 156.49, 0.0, 1], ["hb_200", "2026-07-11", "Lauren Pichney", "Wedding", 2800.0, 1829.25, 1800.0, 0], ["hb_201", "2025-11-04", "Sarah Nickens", "Corporate Event", 1200.0, 0, 0.0, 1], ["hb_202", "2025-11-07", "Natasha Noel", "Other", 1200.0, 0, 0.0, 1], ["hb_203", "2026-02-14", "Maddie Richter", "Wedding", 1200.0, 38.14, 0.0, 1], ["hb_204", "2025-12-20", "Laura Held", "Wedding", 2200.0, 33.0, 0.0, 1], ["hb_205", "2025-12-06", "Lola Akingbade", "Birthday Party", 500.0, 14.75, 0.0, 1], ["hb_206", "2025-12-10", "Daniela McInerney", "Other", 2000.0, 0, 0.0, 1], ["hb_207", "2026-05-16", "Patrick Scally", "Wedding", 2000.0, 1029.25, 1000.0, 0], ["hb_208", "2026-01-15", "Caitlyn Bryant", "Other", 1000.0, 29.25, 0.0, 1], ["hb_209", "", "Spilled Milk", "Wedding", 1200.0, 40.89, 0.0, 1], ["hb_210", "", "Spilled Milk", "Wedding", 4600.0, 156.49, 0.0, 1], ["hb_211", "", "Spilled Milk", "Wedding", 7400.0, 251.78, 0.0, 1], ["hb_212", "", "Spilled Milk", "Wedding", 4600.0, 156.49, 0.0, 1], ["hb_213", "2026-01-31", "Candice candice@ideallyyoursdc.com", "Wedding", 800.0, 0, 0.0, 1]]; return _hbDataCache; }
 // Fields: [id, date, client, eventType, grossAmount, balanceDue, paid, source, notes]
 
 async function importHoneyBook() {
@@ -4607,7 +4607,7 @@ async function importHoneyBook() {
   if (!btn) return;
 
   const cutoff = '2025-01-01';
-  const toSeedAsEvents = HB_DATA.filter(r => r[1] >= cutoff && r[4] > 0);
+  const toSeedAsEvents = getHBData().filter(r => r[1] >= cutoff && r[4] > 0);
 
   if (!confirm(
     `This will:\n` +
@@ -4636,7 +4636,7 @@ async function importHoneyBook() {
   }
 
   // ── STEP 2: Re-seed one clean row per event ──
-  const finRecords = HB_DATA.map(r => {
+  const finRecords = getHBData().map(r => {
     const gross     = r[4];
     const hbFees    = r[5];
     const balanceDue = r[6];
@@ -4790,7 +4790,6 @@ async function saveAdHoc() {
   DATA.adHocPayments.push({ id, contractorId, type, amount, date, notes });
   localStorage.setItem('itm_adhoc', JSON.stringify(DATA.adHocPayments));
   // Also persist to ITM_Payments sheet
-  var cMatch = (DATA.contractors||[]).find(function(c){return c.id===contractorId;});
   try {
     var payment = {
       id: id, contractorId: contractorId,
@@ -4813,13 +4812,6 @@ async function saveAdHoc() {
 
 // ── CSV IMPORT ────────────────────────────────────────────────
 let _csvParsed = [];
-
-function handleCsvDrop(e) {
-  e.preventDefault();
-  document.getElementById('csv-drop-zone').style.borderColor = 'var(--border2)';
-  const file = e.dataTransfer.files[0];
-  if (file) handleCsvFile(file);
-}
 
 // ── TWO-FILE HONEYBOOK IMPORT ──────────────────────────────
 let _payText = null, _projText = null;
@@ -5041,99 +5033,6 @@ function tryCombineImport() {
     '</tr></thead><tbody>' + previewRows + '</tbody></table>' + moreRow;
 
   document.getElementById('csv-import-actions').style.display = 'block';
-}
-
-function handleCsvFile(file) {
-  if (!file) return;
-  toast('Please use the two-file import above — upload both Payments and Projects reports.');
-}
-
-function previewCsv(text) {
-  const lines = text.trim().split('\n').filter(l => l.trim());
-  if (lines.length < 2) { toast('CSV appears empty or invalid.'); return; }
-
-  function parseRow(line) {
-    const result = [];
-    let cur = '', inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      if (line[i] === '"') { inQ = !inQ; }
-      else if (line[i] === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
-      else { cur += line[i]; }
-    }
-    result.push(cur.trim());
-    return result;
-  }
-
-  const headers = parseRow(lines[0]);
-  const rows    = lines.slice(1).map(l => parseRow(l));
-  const isPaymentsReport = headers.some(h => h.trim() === 'PAYMENT_STATUS');
-
-  if (!isPaymentsReport) {
-    document.getElementById('csv-preview').innerHTML =
-      '<div style="color:var(--red);margin-bottom:8px">&#9888; This does not look like a HoneyBook Payments report.</div>' +
-      '<div style="color:var(--muted);font-size:10px">' + headers.slice(0,8).join(', ') + '...</div>' +
-      '<div style="color:var(--muted2);margin-top:8px;font-size:11px">Please download the Payments report from HoneyBook &#8594; Reports.</div>';
-    return;
-  }
-
-  const ci  = headers.findIndex(h => h.trim() === 'PROJECT_NAME');
-  const di  = headers.findIndex(h => h.trim() === 'PROJECT_DATE');
-  const sti = headers.findIndex(h => h.trim() === 'PAYMENT_STATUS');
-  const tai = headers.findIndex(h => h.trim() === 'TOTAL_AMOUNT');
-  const nai = headers.findIndex(h => h.trim() === 'NET_AMOUNT');
-  const tfi = headers.findIndex(h => h.trim() === 'TRANSACTION_FEE');
-
-  const clean = v => (v||'').toString().replace(/['"$,]/g,'').trim();
-  const paidRows = rows.filter(row => clean(row[sti]).toLowerCase() === 'paid');
-
-  const grouped = {};
-  paidRows.forEach(row => {
-    const client = clean(row[ci]);
-    const date   = hbParseDate(row[di]);
-    if (!client) return;
-    const key = client + '|' + date;
-    if (!grouped[key]) grouped[key] = { client, date, totalAmount: 0, netAmount: 0, txFee: 0 };
-    grouped[key].totalAmount += parseFloat(clean(row[tai])) || 0;
-    grouped[key].netAmount   += parseFloat(clean(row[nai])) || 0;
-    grouped[key].txFee       += parseFloat(clean(row[tfi])) || 0;
-  });
-
-  const existingHist = DATA.historicalEvents || [];
-  const maxHbNum = existingHist.map(r=>r.id||'').filter(id=>id.startsWith('hb_'))
-    .reduce((max,id) => Math.max(max, parseInt(id.replace('hb_',''))||0), 213);
-  let newIdx = maxHbNum;
-
-  _csvParsed = Object.values(grouped).filter(g => g.totalAmount > 0).map(g => {
-    const existing = existingHist.find(r => {
-      if (!g.date || !r.date || r.date !== g.date) return false;
-      const rc = (r.client||'').toLowerCase();
-      const gc = g.client.toLowerCase();
-      return rc === gc || gc.includes(rc) || rc.includes(gc);
-    });
-    const id         = existing ? existing.id : 'hb_' + (++newIdx);
-    const grossAmount = g.totalAmount;
-    const hbFees     = Math.round(g.txFee * 100) / 100;
-    const balanceDue = 0;
-    return {
-      id, client: g.client, date: g.date, eventDate: g.date,
-      grossAmount, hbFees, deposit: g.totalAmount, balanceDue, paid: true,
-      contractValue: grossAmount, eventType: '', source: 'honeybook',
-      notes: existing?.notes || '',
-    };
-  }).filter(r => r.client);
-
-  const preview     = _csvParsed.slice(0, 3);
-  const newCount    = _csvParsed.filter(r => !existingHist.find(e => e.id === r.id)).length;
-  const previewRows = preview.map(r =>
-    '<tr><td style="padding:2px 6px;font-size:9px;color:var(--muted)">' + r.id + '</td>' +
-    '<td style="padding:2px 6px">' + r.client + '</td>' +
-    '<td style="padding:2px 6px;color:var(--muted)">' + (r.date||'—') + '</td>' +
-    '<td style="padding:2px 6px;color:var(--gold);text-align:right">$' + Math.round(r.grossAmount).toLocaleString() + '</td></tr>'
-  ).join('');
-
-  document.getElementById('csv-preview').innerHTML =
-    '<div style="color:var(--green);margin-bottom:6px">&#10003; ' + _csvParsed.length + ' events parsed (' + newCount + ' new). Upload Projects report next.</div>' +
-    '<table style="width:100%;font-size:10px;border-collapse:collapse"><tbody>' + previewRows + '</tbody></table>';
 }
 
 async function confirmCsvImport() {
@@ -5769,7 +5668,7 @@ async function savePayment() {
     event:        _payContext.ev.client,
     eventDate:    _payContext.ev.eventDate,
     hours,
-    travelShare:  travel,
+    travelShare:  0,
     amount,
     date,
     method,
@@ -5963,15 +5862,6 @@ async function ensureGcalToken() {
   return false;
 }
 
-function initGoogleIdentity() {
-  if (window.google && window.google.accounts) return;
-  const s = document.createElement('script');
-  s.src = 'https://accounts.google.com/gsi/client';
-  s.async = true;
-  s.defer = true;
-  document.head.appendChild(s);
-}
-
 // ── First-time connect: auth code flow so we get a refresh token ──
 function connectGoogleCalendar() {
   const doAuth = () => {
@@ -6123,7 +6013,9 @@ async function fetchCalendarEvents() {
     });
 
     // Sync into DATA.bookedDates so inquiry availability checks work
-    DATA.bookedDates = gcalEvents.map(e => ({ date: e.start, label: e.title, id: e.id }));
+    // Preserve manually-added booked dates (those without a Google Calendar id)
+    const manualDates = (DATA.bookedDates||[]).filter(b => !b.id);
+    DATA.bookedDates = [...manualDates, ...gcalEvents.map(e => ({ date: e.start, label: e.title, id: e.id }))];
 
     renderCalendar();
     if (!window._silentCalSync) toast(`✓ Loaded ${gcalEvents.length} events from ${calendars.length} calendars`);
@@ -6541,7 +6433,7 @@ function renderEvents() {
             <div style="font-weight:700;color:var(--cream);font-size:14px">${r.client}</div>
             <span style="font-size:10px;background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:2px 6px;color:var(--muted2)">${r.eventType||'Event'}</span>
             ${daysLabel ? `<span style="font-size:10px;color:${daysColor}">${daysLabel}</span>` : ''}
-            ${(r.source==='spilled_milk'||(r.id||'').startsWith('sm_')) ? '<span style="font-size:9px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold)">📱 SM</span>' : ''}
+            ${((r.source||'').startsWith('smm_')||r.source==='spilled_milk'||(r.id||'').startsWith('sm_')) ? '<span style="font-size:9px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold)">📱 SMM</span>' : ''}
           </div>
           <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted2);margin-bottom:6px">
             ${r.package ? `<span>📦 ${r.package}</span>` : '<span style="color:var(--muted)">No package set</span>'}
@@ -6665,6 +6557,12 @@ function openNewEventModal() {
         <div class="field"><label class="field-lbl">Deposit Paid ($)</label><input class="field-input" id="ne-deposit" type="number" placeholder="0"></div>
         <div class="field" style="grid-column:1/-1"><label class="field-lbl">Location / Venue</label><input class="field-input" id="ne-location" placeholder="Venue name or city"></div>
         <div class="field"><label class="field-lbl">Email</label><input class="field-input" id="ne-email" placeholder="client@email.com"></div>
+        <div class="field"><label class="field-lbl">Company Tag</label>
+          <select class="field-input" id="ne-company-tag" style="cursor:pointer">
+            <option value="">None (ITM direct)</option>
+            ${SMM_COMPANIES.map(c => '<option value="'+c+'">'+c+'</option>').join('')}
+          </select>
+        </div>
         <div class="field" style="grid-column:1/-1"><label class="field-lbl">Notes</label><input class="field-input" id="ne-notes" placeholder="Package details, special notes..."></div>
       </div>
       <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
@@ -6681,13 +6579,18 @@ async function saveNewEvent() {
   const value  = parseFloat(document.getElementById('ne-value')?.value)||0;
   if (!client || !date || !value) { toast('Client, date, and contract value are required'); return; }
   const deposit = parseFloat(document.getElementById('ne-deposit')?.value)||0;
+  const companyTag = document.getElementById('ne-company-tag')?.value||'';
+  const eventType = document.getElementById('ne-type')?.value||'Wedding';
+  const notes = document.getElementById('ne-notes')?.value||'';
+  const id = 'evt-' + Date.now();
+  const source = companyTag ? 'smm_' + companyTag.toLowerCase().replace(/\s+/g,'_') : '';
   const ev = {
-    id:            'evt-' + Date.now(),
+    id,
     inquiryId:     '',
-    client,
+    client:         companyTag || client,
     email:          document.getElementById('ne-email')?.value||'',
     eventDate:      date,
-    eventType:      document.getElementById('ne-type')?.value||'Wedding',
+    eventType,
     location:       document.getElementById('ne-location')?.value||'',
     package:        '',
     packageHours:   '',
@@ -6695,14 +6598,34 @@ async function saveNewEvent() {
     deposit,
     balance:        value - deposit,
     status:         'upcoming',
-    notes:          document.getElementById('ne-notes')?.value||'',
+    notes:          companyTag ? (client !== companyTag ? client + ' — ' + notes : notes) : notes,
+  };
+  const fin = {
+    id,
+    date,
+    client:         companyTag || client,
+    eventType,
+    grossAmount:    value,
+    hbFees:         0,
+    travelFee:      0,
+    deposit,
+    balanceDue:     value - deposit,
+    paid:           (value - deposit) <= 0,
+    source:         source || 'manual',
+    notes:          companyTag ? (client !== companyTag ? client + ' — ' + notes : notes) : notes,
   };
   try {
-    await apiCall('saveEvent', ev);
+    await Promise.all([
+      apiCall('saveEvent', ev),
+      apiCall('saveFinancial', fin),
+    ]);
     DATA.events.push(ev);
+    DATA.historicalEvents = DATA.historicalEvents || [];
+    DATA.historicalEvents.push({...fin, contractValue: value, netRevenue: value});
     document.getElementById('new-event-overlay')?.remove();
-    toast(`✓ ${client} added`);
+    toast(`✓ ${companyTag || client} added`);
     renderEvents();
+    renderFinancials();
     renderDashboard();
   } catch(err) { toast('Error: ' + err.message); }
 }
@@ -6878,9 +6801,34 @@ async function gmailSendReply() {
 let delView = 'overview'; // 'overview' | 'detail' | 'team' | 'completed' | 'tasks'
 let delDetailEventId = null;
 let taskSort = 'date'; // 'date' | 'priority'
+let _delInitDone = false;
+
+async function lazyInitDeliverables() {
+  if (_delInitDone) return;
+  _delInitDone = true;
+  try {
+    var todayAuto = new Date().toISOString().split('T')[0];
+    var delEventIds = new Set((DATA.deliverables||[]).map(function(d) { return d.eventId; }));
+    var needInit = (DATA.historicalEvents||[]).filter(function(r) { return r.client && r.date && r.date >= todayAuto && !delEventIds.has(r.id); });
+    for (var i = 0; i < needInit.length; i++) {
+      var r = needInit[i];
+      try { await apiCall('initEventDeliverables', { eventId: r.id, client: r.client, eventDate: r.date, package: r.package||'' }); } catch(e) {}
+    }
+    if (needInit.length > 0) {
+      var delRows2 = await apiCall('getDeliverableRows');
+      DATA.deliverables = (delRows2 || []).map(function(d) {
+        return { id: String(d.id||''), eventId: String(d.eventId||''), client: String(d.client||''), eventDate: String(d.eventDate||''), type: String(d.type||''), label: String(d.label||d.type||''), status: String(d.status||'pending'), assignee: String(d.assignee||''), dueDate: String(d.dueDate||''), completedDate: String(d.completedDate||''), notes: String(d.notes||'') };
+      });
+      renderDeliverables();
+    }
+  } catch(e) { console.warn('Auto-init deliverables failed:', e); }
+}
 
 function renderDeliverables() {
   var el = document.getElementById('deliverables-content');
+
+  // Lazy-init deliverables for upcoming events on first view
+  if (!_delInitDone) lazyInitDeliverables();
 
   // Top-level sub-tabs: Event Deliverables vs My Tasks
   if (delView === 'tasks') { renderPersonalTasks(); return; }
