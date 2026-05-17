@@ -2000,10 +2000,13 @@ function _renderDashboard() {
     return s + owed;
   }, 0);
 
-  // Active Events = booked events with future dates
-  const upcomingEvents = liveEvents
-    .filter(e => (e.eventDate||'') >= todayStr && (e.eventDate||'') <= in60Str)
-    .sort((a,b) => a.eventDate.localeCompare(b.eventDate));
+  // Active Events = booked events with future dates (merge ITM_Events + ITM_Financials)
+  const liveIds60 = new Set(liveEvents.filter(e => (e.eventDate||'') >= todayStr && (e.eventDate||'') <= in60Str).map(e=>e.id));
+  const finOnly60 = allRecs.filter(r => (r.date||'') >= todayStr && (r.date||'') <= in60Str && !liveIds60.has(r.id) && !liveEvents.some(e => e.eventDate === r.date && ((e.client||'').toLowerCase().includes((r.client||'').toLowerCase()) || (r.client||'').toLowerCase().includes((e.client||'').toLowerCase()))));
+  const upcomingEvents = [
+    ...liveEvents.filter(e => (e.eventDate||'') >= todayStr && (e.eventDate||'') <= in60Str).map(e => ({...e, _date: e.eventDate})),
+    ...finOnly60.map(r => ({...r, client: r.client, eventType: r.eventType, _date: r.date, eventDate: r.date, contractValue: r.grossAmount||0, deposit: r.deposit||0, balance: r.balanceDue||0}))
+  ].sort((a,b) => (a._date||'').localeCompare(b._date||''));
 
   const conflictsBanner    = conflicts.length > 0 ? renderConflictsBanner(conflicts, true) : '';
   const doubleBookedBanner = renderDoubleBookedBanner(doubleBooked);
