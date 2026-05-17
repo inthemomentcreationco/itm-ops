@@ -1856,6 +1856,7 @@ function renderAll() {
   renderInquiries();
   renderContractors();
   renderFinancials();
+  renderEvents();
   if (document.getElementById('page-deliverables').classList.contains('active')) renderDeliverables();
   // Notification dot
   const urgent = DATA.inquiries.filter(i => i.stage==='new' && hoursOld(i.timestamp) > 4);
