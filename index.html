@@ -3403,22 +3403,26 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
   if (!names.length) return '<div class="empty"><div class="empty-icon">✓</div><div class="empty-msg">No contractor data — sync to load</div></div>';
 
   // Summary banner
-  let totalOwedAmt = 0, totalPaidAmt = 0;
+  const thisYear = new Date().getFullYear();
+  let totalOwedAmt = 0, totalPaidAmt = 0, ytdOwedAmt = 0, ytdPaidAmt = 0;
   names.forEach(name => contractorMap[name].forEach(e => {
     if (e.noCharge) return;
-    if (e.paid) totalPaidAmt += e.pay;
-    else totalOwedAmt += e.pay;
+    const isYTD = e.date && new Date(e.date).getFullYear() === thisYear;
+    if (e.paid) { totalPaidAmt += e.pay; if (isYTD) ytdPaidAmt += e.pay; }
+    else { totalOwedAmt += e.pay; if (isYTD) ytdOwedAmt += e.pay; }
   }));
 
   let html = '';
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">' +
     '<div style="background:var(--amberbg);border:1px solid var(--amberborder);border-radius:var(--r);padding:14px 18px">' +
-      '<div style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em">You Owe Contractors</div>' +
-      '<div style="font-family:\'Cormorant\',serif;font-size:32px;color:var(--amber)">$' + Math.round(totalOwedAmt).toLocaleString() + '</div>' +
+      '<div style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em">You Owe Contractors (' + thisYear + ')</div>' +
+      '<div style="font-family:\'Cormorant\',serif;font-size:32px;color:var(--amber)">$' + Math.round(ytdOwedAmt).toLocaleString() + '</div>' +
+      '<div style="font-size:10px;color:var(--muted2);margin-top:4px">All time: $' + Math.round(totalOwedAmt).toLocaleString() + '</div>' +
     '</div>' +
     '<div style="background:var(--greenbg);border:1px solid var(--greenborder);border-radius:var(--r);padding:14px 18px">' +
-      '<div style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em">Paid to Contractors</div>' +
-      '<div style="font-family:\'Cormorant\',serif;font-size:32px;color:var(--green)">$' + Math.round(totalPaidAmt).toLocaleString() + '</div>' +
+      '<div style="font-size:10px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em">Paid to Contractors (' + thisYear + ')</div>' +
+      '<div style="font-family:\'Cormorant\',serif;font-size:32px;color:var(--green)">$' + Math.round(ytdPaidAmt).toLocaleString() + '</div>' +
+      '<div style="font-size:10px;color:var(--muted2);margin-top:4px">All time: $' + Math.round(totalPaidAmt).toLocaleString() + '</div>' +
     '</div>' +
   '</div>';
 
