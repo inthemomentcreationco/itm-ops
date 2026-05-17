@@ -5204,15 +5204,22 @@ const PACKAGES = {
   "Full-On Paparazzi": 4,
 };
 
-function defaultDeliverables(pkg) {
+function defaultDeliverables(pkg, isSMM) {
+  if (isSMM) return { recapReel: false, stories: false };
   const reelCount = PACKAGES[pkg] || 0;
   return { raws: false, reels: Array(reelCount).fill(false) };
 }
 
 function parseDeliverables(row) {
-  const pkg = row.package || '';
+  const smm = (row.source||'').startsWith('smm_') || (row.source||'').toLowerCase() === 'spilled_milk' || (row.id||'').startsWith('sm_') || (row.client||'').toLowerCase().includes('spilled milk');
   let dl = {};
   try { dl = row.deliverables ? JSON.parse(row.deliverables) : {}; } catch(e) { dl = {}; }
+  if (smm) {
+    if (dl.recapReel === undefined) dl.recapReel = false;
+    if (dl.stories === undefined) dl.stories = false;
+    return dl;
+  }
+  const pkg = row.package || '';
   if (!dl.reels) {
     const count = PACKAGES[pkg] || 0;
     dl.reels = Array(count).fill(false);
@@ -5296,6 +5303,21 @@ function openDeliverableModal(eventId, clientName) {
     return div;
   }
 
+  const _isSMMEvent = (row.source||'').startsWith('smm_') || (row.source||'').toLowerCase() === 'spilled_milk' || (row.id||'').startsWith('sm_') || (row.client||'').toLowerCase().includes('spilled milk');
+
+  if (_isSMMEvent) {
+    items.appendChild(makeRow('Recap Reel', '', dl.recapReel||false, async function(checked) {
+      dl.recapReel = checked;
+      row.deliverables = JSON.stringify(dl);
+      await saveDeliverables(row);
+    }));
+    items.appendChild(makeRow('Stories', '', dl.stories||false, async function(checked) {
+      dl.stories = checked;
+      row.deliverables = JSON.stringify(dl);
+      await saveDeliverables(row);
+    }));
+  } else {
+
   // Planning call row
   items.appendChild(makeRow('Planning call', '', planningCall, async function(checked) {
     row.planningCall = checked;
@@ -5341,6 +5363,10 @@ function openDeliverableModal(eventId, clientName) {
 
   modal.appendChild(items);
   modal.appendChild(addBtn);
+  } // end else (non-SMM)
+
+  if (_isSMMEvent) modal.appendChild(items);
+
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
   overlay.addEventListener('click', function(ev) { if (ev.target === overlay) overlay.remove(); });
@@ -6390,8 +6416,9 @@ function renderEvents() {
   const cutoffStr = cutoff.toISOString().split('T')[0];
   const todayStr  = today.toISOString().split('T')[0];
 
+  const isSMM = r => (r.source||'').startsWith('smm_') || (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
   const allEvents = getMergedEvents()
-    .filter(r => r.date)
+    .filter(r => r.date && !isSMM(r))
     .sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
   // Split active vs completed
