@@ -4239,7 +4239,7 @@ function openSMEventModal(rowJson) {
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('sm-event-modal').remove()">Cancel</button>
-        <button class="btn btn-gold" id="sm-save-btn" onclick="this.disabled=true;this.textContent='Saving...';saveSMEvent(${isEdit?JSON.stringify(row?.id):'null'})">✓ ${isEdit?'Save Changes':'Add Event'}</button>
+        <button class="btn btn-gold" id="sm-save-btn" data-eid="${isEdit?(row?.id||''):''}" onclick="this.disabled=true;this.textContent='Saving...';saveSMEvent(this.dataset.eid||null)">✓ ${isEdit?'Save Changes':'Add Event'}</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
