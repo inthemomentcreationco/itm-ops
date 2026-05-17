@@ -4342,7 +4342,10 @@ async function deleteSMEvent(id, name) {
     ]);
     DATA.historicalEvents = (DATA.historicalEvents||[]).filter(r => r.id !== id);
     DATA.events = (DATA.events||[]).filter(e => e.id !== id);
+    DATA.assignments = (DATA.assignments||[]).filter(a => a.eventId !== id);
+    localStorage.setItem('itm_historical', JSON.stringify(DATA.historicalEvents));
     toast('✓ Deleted');
+    window._evtTab = 'smm';
     renderEvents();
     renderDashboard();
   } catch(e) {
