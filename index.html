@@ -2882,11 +2882,19 @@ function buildTeamProfile(c) {
   var paidEventIds = new Set(cPays.map(function(p){return p.eventId;}));
   // Also count events paid via the Financials log
   uPay.logPaidEventIds.forEach(function(eid){paidEventIds.add(eid);});
+  var _noCharge = JSON.parse(localStorage.getItem('itm_pay_overrides')||'{}');
   var unpaidEvents = assignedLive.filter(function(ev){return !paidEventIds.has(ev.id);});
   var totalOwed = unpaidEvents.reduce(function(s,ev){
+    var fin = (DATA.historicalEvents||[]).find(function(f){return f.id===ev.id;});
+    if (fin) {
+      var slot = fin.contractorName===c.name ? '_1' : '_2';
+      if (_noCharge[fin.id+slot]) return s;
+      var pay = fin.contractorName===c.name ? (parseFloat(fin.contractorPay)||0) : (parseFloat(fin.contractorPay2)||0);
+      return s + pay;
+    }
     var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
     var hrs = (a?a.hours:0) || ev.packageHours || 0;
-    return s + (hrs*100);
+    return s + (hrs*HOURLY_RATE);
   },0);
 
   // ── AVAILABILITY mini-calendar (next 30 days) ──
@@ -2982,9 +2990,15 @@ function buildTeamProfile(c) {
   if (unpaidEvents.length > 0) {
     html += '<div style="margin-top:8px">';
     unpaidEvents.forEach(function(ev){
-      var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
-      var hrs = (a?a.hours:0)||ev.packageHours||0;
-      var evPay = (hrs*100);
+      var _fin = (DATA.historicalEvents||[]).find(function(f){return f.id===ev.id;});
+      var evPay = 0;
+      if (_fin) {
+        evPay = _fin.contractorName===c.name ? (parseFloat(_fin.contractorPay)||0) : (parseFloat(_fin.contractorPay2)||0);
+      } else {
+        var a = (ev.contractorAssignments||[]).find(function(x){return x.contractorId===c.id;});
+        var hrs = (a?a.hours:0)||ev.packageHours||0;
+        evPay = (hrs*HOURLY_RATE);
+      }
       html += '<div class="contr-event-row" style="font-size:11px">'
         + '<span>' + escHtml(ev.client||'—') + '</span>'
         + '<span style="color:var(--gold);font-family:\'JetBrains Mono\',monospace">$' + evPay.toLocaleString() + '</span></div>';
@@ -3044,15 +3058,23 @@ function renderContractors() {
         // Find assigned unpaid events for this contractor
         const paidEventIds = new Set(uPay.sheetPays.map(p=>p.eventId));
         uPay.logPaidEventIds.forEach(eid=>paidEventIds.add(eid));
+        const noCharge = JSON.parse(localStorage.getItem('itm_pay_overrides')||'{}');
         const assignedEvents = (DATA.events||[]).filter(ev=>
           (ev.contractorAssignments||[]).some(a=>a.contractorId===c.id)
         );
         const upcomingCount = assignedEvents.filter(ev=>(ev.eventDate||'')>=todayStr).length;
         const unpaidEvents = assignedEvents.filter(ev=>!paidEventIds.has(ev.id));
         const totalOwed = unpaidEvents.reduce((s,ev)=>{
+          const fin = (DATA.historicalEvents||[]).find(f=>f.id===ev.id);
+          if (fin) {
+            const slot = fin.contractorName===c.name ? '_1' : '_2';
+            if (noCharge[fin.id+slot]) return s;
+            const pay = fin.contractorName===c.name ? (parseFloat(fin.contractorPay)||0) : (parseFloat(fin.contractorPay2)||0);
+            return s + pay;
+          }
           const a = (ev.contractorAssignments||[]).find(x=>x.contractorId===c.id);
           const hrs = a?.hours || ev.packageHours;
-          return s + (hrs*100);
+          return s + (hrs*HOURLY_RATE);
         },0);
 
         // Historical events for this contractor (not already in live)
@@ -3286,7 +3308,7 @@ function renderFinancials() {
       <div class="stat-val">$${(postTax/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:${postTax>=FIN.ownSalaryGoal?'var(--green)':'var(--red)'};margin-top:4px">${postTax>=FIN.ownSalaryGoal?'✓ Meets goal':'⚠ Below goal'} of $${(FIN.ownSalaryGoal/1000).toFixed(0)}k</div>
     </div>
-    <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._finTab='smm';renderFinancials()">
+    <div class="stat-card" style="background:var(--s2);border-color:var(--border);cursor:pointer" onclick="window._evtTab='smm';showPage('events')">
       <div class="stat-lbl" style="color:var(--gold)">📱 SMM Clients</div>
       <div class="stat-val" style="color:var(--gold)">$${(smmGross/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">${smmLabel} · ${smmDisplay.length} invoice${smmDisplay.length!==1?'s':''} · tap to view</div>
@@ -3319,7 +3341,6 @@ function renderFinancials() {
       { key:'contractors',  label:'👤 Contractor Pay' },
       { key:'expenses',     label:'🧾 Expenses' },
       { key:'ledger',       label:'📋 Event Ledger' },
-      { key:'smm',          label:'📱 SMM' },
       { key:'tax',          label:'📊 Tax & P&L' },
       { key:'1099',         label:'📄 1099-NEC' },
       { key:'import',       label:'📥 Import' },
@@ -3332,7 +3353,6 @@ function renderFinancials() {
     ${ft === 'contractors' ? renderFinContractors(unpaidPay, paidPay, payments, liveEvents) : ''}
     ${ft === 'expenses' ? renderFinExpenses(expenses, thisYear) : ''}
     ${ft === 'ledger' ? renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) : ''}
-    ${ft === 'smm' ? renderFinSMM(smmRows, thisYear) : ''}
     ${ft === 'tax' ? renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, byYear, chartYears, maxGross, thisYear, today) : ''}
     ${ft === '1099' ? render1099(allRows, thisYear) : ''}
     ${ft === 'import' ? renderFinImport(allHist) : ''}
@@ -4148,7 +4168,7 @@ function manageSMMCompanies() {
   SMM_COMPANIES.push(trimmed);
   saveSMMCompanies();
   toast('✓ Added ' + trimmed);
-  renderFinancials();
+  renderEvents();
 }
 
 // ── SMM INDIVIDUAL EVENT MODAL ─────────────────────────
@@ -4249,6 +4269,16 @@ async function saveSMEvent(existingId) {
     notes: venue
   };
 
+  const contractorAssignments = [];
+  if (c1) {
+    const cObj = (DATA.contractors||[]).find(c => c.name === c1);
+    contractorAssignments.push({ id: id+'_a1', contractorId: cObj?.id||c1, contractorName: c1, hours: +hours||0, travelShare: 0, paid: false });
+  }
+  if (c2) {
+    const cObj2 = (DATA.contractors||[]).find(c => c.name === c2);
+    contractorAssignments.push({ id: id+'_a2', contractorId: cObj2?.id||c2, contractorName: c2, hours: +hours||0, travelShare: 0, paid: false });
+  }
+
   const ev = {
     id,
     inquiryId:     '',
@@ -4264,21 +4294,31 @@ async function saveSMEvent(existingId) {
     balance:       0,
     status:        'upcoming',
     notes:         venue,
+    contractorAssignments,
   };
 
+  const saves = [
+    apiCall('saveFinancial', payload),
+    apiCall('saveEvent', ev),
+  ];
+  const assignments = [];
+  contractorAssignments.forEach(a => {
+    saves.push(apiCall('saveAssignment', { ...a, eventId: id }));
+    assignments.push({ ...a, eventId: id });
+  });
+
   try {
-    await Promise.all([
-      apiCall('saveFinancial', payload),
-      apiCall('saveEvent', ev),
-    ]);
+    await Promise.all(saves);
     DATA.events.push(ev);
+    DATA.assignments = DATA.assignments || [];
+    assignments.forEach(a => DATA.assignments.push(a));
     DATA.historicalEvents = DATA.historicalEvents || [];
     DATA.historicalEvents.push({...payload, contractValue: 0, netRevenue: 0});
     document.getElementById('sm-event-modal').remove();
     toast('✓ ' + company + ' event saved');
-    window._finTab = 'smm';
-    renderFinancials();
+    window._evtTab = 'smm';
     renderEvents();
+    renderContractors();
     renderDashboard();
   } catch(e) {
     toast('⚠ Error saving: ' + e.message);
@@ -5434,10 +5474,11 @@ function renderAssignModal(ev) {
     <div style="background:var(--goldbg);border:1px solid var(--border2);border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px">
       <div style="color:var(--muted2);margin-bottom:4px">Total contractor cost for this event</div>
       <div style="font-family:'Cormorant',serif;font-size:24px;color:var(--gold)">$${
-        assigned.reduce((sum,a)=>{
-          const hrs = a.hours || ev.packageHours;
-          return sum + (hrs*100);
-        }, 0).toLocaleString()
+        (()=>{
+          const _f = (DATA.historicalEvents||[]).find(f=>f.id===ev.id);
+          if (_f) return ((parseFloat(_f.contractorPay)||0)+(parseFloat(_f.contractorPay2)||0)).toLocaleString();
+          return assigned.reduce((sum,a)=>{ const hrs = a.hours||ev.packageHours; return sum+(hrs*HOURLY_RATE); },0).toLocaleString();
+        })()
       }</div>
     </div>` : ''}
 
@@ -6331,6 +6372,20 @@ function calToday() {
 let evtFilter = 'active'; // 'active' | 'completed'
 
 function renderEvents() {
+  const et = window._evtTab || 'events';
+  if (et === 'smm') {
+    const isSMM = r => (r.source||'').startsWith('smm_') || (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
+    const smmRows = (DATA.historicalEvents||[]).filter(isSMM);
+    const thisYear = new Date().getFullYear();
+    document.getElementById('events-content').innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-outline" onclick="window._evtTab='events';renderEvents()" style="padding:6px 14px;font-size:11px">📅 Events</button>
+      <button class="btn btn-gold" style="padding:6px 14px;font-size:11px">📱 SMM</button>
+    </div>
+    ${renderFinSMM(smmRows, thisYear)}`;
+    return;
+  }
+
   const today = new Date();
   const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() - 30);
   const cutoffStr = cutoff.toISOString().split('T')[0];
@@ -6397,6 +6452,9 @@ function renderEvents() {
   </div>
 
   <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
+    <button class="btn btn-gold" style="padding:6px 14px;font-size:11px">📅 Events</button>
+    <button class="btn btn-outline" onclick="window._evtTab='smm';renderEvents()" style="padding:6px 14px;font-size:11px">📱 SMM</button>
+    <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
     <button class="btn ${evtFilter!=='completed'?'btn-gold':'btn-outline'}" onclick="evtFilter='active';renderEvents()" style="padding:6px 14px;font-size:11px">Active (${active.length})</button>
     <button class="btn ${evtFilter==='completed'?'btn-gold':'btn-outline'}" onclick="evtFilter='completed';renderEvents()" style="padding:6px 14px;font-size:11px">Completed (${completed.length})</button>
     <div style="margin-left:auto">
@@ -6430,7 +6488,7 @@ function renderEvents() {
         </div>
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-            <div style="font-weight:700;color:var(--cream);font-size:14px">${r.client}</div>
+            <div style="font-weight:700;color:var(--cream);font-size:14px">${((r.source||'').startsWith('smm_')||r.source==='spilled_milk'||(r.id||'').startsWith('sm_')) && r.notes ? r.notes + ' - ' + r.client : r.client}</div>
             <span style="font-size:10px;background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:2px 6px;color:var(--muted2)">${r.eventType||'Event'}</span>
             ${daysLabel ? `<span style="font-size:10px;color:${daysColor}">${daysLabel}</span>` : ''}
             ${((r.source||'').startsWith('smm_')||r.source==='spilled_milk'||(r.id||'').startsWith('sm_')) ? '<span style="font-size:9px;padding:1px 6px;border-radius:20px;background:rgba(201,169,110,0.15);color:var(--gold)">📱 SMM</span>' : ''}
@@ -6577,9 +6635,9 @@ async function saveNewEvent() {
   const client = document.getElementById('ne-client')?.value?.trim();
   const date   = document.getElementById('ne-date')?.value;
   const value  = parseFloat(document.getElementById('ne-value')?.value)||0;
-  if (!client || !date || !value) { toast('Client, date, and contract value are required'); return; }
-  const deposit = parseFloat(document.getElementById('ne-deposit')?.value)||0;
   const companyTag = document.getElementById('ne-company-tag')?.value||'';
+  if (!client || !date || (!value && !companyTag)) { toast('Client, date, and contract value are required'); return; }
+  const deposit = parseFloat(document.getElementById('ne-deposit')?.value)||0;
   const eventType = document.getElementById('ne-type')?.value||'Wedding';
   const notes = document.getElementById('ne-notes')?.value||'';
   const id = 'evt-' + Date.now();
