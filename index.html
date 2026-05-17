@@ -1850,6 +1850,18 @@ function generateEmail(inq) {
   return { subject, body };
 }
 
+// ════════════════════════════════ UNIFIED EVENT MERGE ════════════════════════════════
+function getMergedEvents() {
+  const allFin = (DATA.historicalEvents||[]).filter(r => r.client && r.date);
+  const finIds = new Set(allFin.map(r => r.id));
+  const liveOnly = (DATA.events||[]).filter(e => !finIds.has(e.id) && !allFin.some(f => f.date === e.eventDate && ((f.client||'').toLowerCase().includes((e.client||'').toLowerCase()) || (e.client||'').toLowerCase().includes((f.client||'').toLowerCase())))).map(e => ({
+    ...e, date: e.eventDate||e.date||'', grossAmount: (e.contractValue||0),
+    balanceDue: e.balance||0, deposit: e.deposit||0,
+    paid: (e.balance||0)===0&&(e.deposit||0)>0
+  }));
+  return [...allFin, ...liveOnly];
+}
+
 // ════════════════════════════════ RENDER ALL ════════════════════════════════
 function renderAll() {
   renderDashboard();
@@ -1933,31 +1945,10 @@ function _renderDashboard() {
   const doubleBooked  = getDoubleBookedDates();
 
   // ── FINANCIAL STATS ──
-  const allRecs    = DATA.historicalEvents || [];
-  const liveEvents = DATA.events || [];
   const payments   = DATA.payments || [];
-
-  // Merge HB historical + live events for revenue picture
-  // Live events that have a contractValue are real bookings
-  const liveFinRows = liveEvents.map(e => {
-    const _fm = (DATA.historicalEvents||[]).find(f => f.date === e.eventDate && (f.client === e.client || (f.client||'').toLowerCase().includes((e.client||'').toLowerCase()) || (e.client||'').toLowerCase().includes((f.client||'').toLowerCase())));
-    return {
-    id:          e.id,
-    date:        e.eventDate || '',
-    client:      e.client,
-    eventType:   e.eventType || '',
-    grossAmount: (e.contractValue||0),
-    deposit:     _fm ? _fm.deposit : e.deposit || 0,
-    balanceDue:  _fm && _fm.paid ? 0 : (_fm ? _fm.balanceDue : e.balance) || 0,
-    paid:        (_fm ? _fm.paid : false) || e.status === 'completed' || (e.balance||0) === 0,
-    source:      'live',
-    _raw:        e,
-  };});
-
-  // Combine: prefer live over HB if same client+date exists
-  const liveIds = new Set(liveFinRows.map(r => r.id));
-  const hbRows  = allRecs.filter(r => !liveIds.has(r.id));
-  const allRows  = [...liveFinRows, ...hbRows];
+  const allRows    = getMergedEvents();
+  const liveEvents = DATA.events || [];
+  const allRecs    = DATA.historicalEvents || [];
 
   const thisYear  = today.getFullYear();
   const thisMonth = today.getMonth();
@@ -2000,13 +1991,11 @@ function _renderDashboard() {
     return s + owed;
   }, 0);
 
-  // Active Events = booked events with future dates (merge ITM_Events + ITM_Financials)
-  const liveIds60 = new Set(liveEvents.filter(e => (e.eventDate||'') >= todayStr && (e.eventDate||'') <= in60Str).map(e=>e.id));
-  const finOnly60 = allRecs.filter(r => (r.date||'') >= todayStr && (r.date||'') <= in60Str && !liveIds60.has(r.id) && !liveEvents.some(e => e.eventDate === r.date && ((e.client||'').toLowerCase().includes((r.client||'').toLowerCase()) || (r.client||'').toLowerCase().includes((e.client||'').toLowerCase()))));
-  const upcomingEvents = [
-    ...liveEvents.filter(e => (e.eventDate||'') >= todayStr && (e.eventDate||'') <= in60Str).map(e => ({...e, _date: e.eventDate})),
-    ...finOnly60.map(r => ({...r, client: r.client, eventType: r.eventType, _date: r.date, eventDate: r.date, contractValue: r.grossAmount||0, deposit: r.deposit||0, balance: r.balanceDue||0}))
-  ].sort((a,b) => (a._date||'').localeCompare(b._date||''));
+  // Active Events = booked events with future dates (from unified merge)
+  const upcomingEvents = allRows
+    .filter(r => (r.date||r.eventDate||'') >= todayStr && (r.date||r.eventDate||'') <= in60Str)
+    .map(r => ({...r, _date: r.date||r.eventDate, eventDate: r.date||r.eventDate, contractValue: r.grossAmount||r.contractValue||0, deposit: r.deposit||0, balance: r.balanceDue||r.balance||0}))
+    .sort((a,b) => (a._date||'').localeCompare(b._date||''));
 
   const conflictsBanner    = conflicts.length > 0 ? renderConflictsBanner(conflicts, true) : '';
   const doubleBookedBanner = renderDoubleBookedBanner(doubleBooked);
@@ -3169,34 +3158,12 @@ function renderFinancials() {
   const todayStr  = today.toISOString().split('T')[0];
 
   // ── DATA SOURCES ──
-  const allHist    = DATA.historicalEvents || [];
-  const liveEvents = DATA.events || [];
   const payments   = DATA.payments || [];
   const expenses   = DATA.expenses || [];
   const assignments = DATA.assignments || [];
+  const liveEvents = DATA.events || [];
 
-  // Merge HB historical + live events (prefer live if same id exists)
-  const liveIds    = new Set(liveEvents.map(e => e.id));
-  const hbRows     = allHist.filter(r => !liveIds.has(r.id));
-  const hbById     = Object.fromEntries(allHist.map(r => [r.id, r]));
-  const liveRows   = liveEvents.map(e => {
-    const fin = hbById[e.id] || allHist.find(f => f.date === e.eventDate && (f.client === e.client || (f.client||'').toLowerCase().includes((e.client||'').toLowerCase()) || (e.client||'').toLowerCase().includes((f.client||'').toLowerCase()))) || {};
-    const finPaid = fin.paid === true;
-    return ({
-    id:            e.id,
-    date:          e.eventDate || '',
-    client:        e.client,
-    eventType:     e.eventType || '',
-    grossAmount:   (e.contractValue||0),
-    deposit:       fin.deposit || e.deposit || 0,
-    balanceDue:    finPaid ? 0 : (fin.balanceDue || e.balance || 0),
-    paid:          finPaid || ((e.balance||0) === 0 && (e.deposit||0) > 0),
-    contractorPay: parseFloat(fin.contractorPay)||0,
-    contractorPay2:parseFloat(fin.contractorPay2)||0,
-    source:        'live',
-    _live:         e,
-  });});
-  const allRows    = [...liveRows, ...hbRows];
+  const allRows    = getMergedEvents();
 
   // ── SMM (Social Media Management clients) — visibility only, still in totals ──
   const isSMM = r => (r.source||'').startsWith('smm_') || (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
@@ -6403,7 +6370,7 @@ function renderEvents() {
   const et = window._evtTab || 'events';
   if (et === 'smm') {
     const isSMM = r => (r.source||'').startsWith('smm_') || (r.client||'').toLowerCase().includes('spilled milk') || (r.source||'').toLowerCase() === 'spilled_milk' || (r.id||'').startsWith('sm_');
-    const smmRows = (DATA.historicalEvents||[]).filter(isSMM);
+    const smmRows = getMergedEvents().filter(isSMM);
     const thisYear = new Date().getFullYear();
     document.getElementById('events-content').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
@@ -6419,15 +6386,7 @@ function renderEvents() {
   const cutoffStr = cutoff.toISOString().split('T')[0];
   const todayStr  = today.toISOString().split('T')[0];
 
-  // Pull from ITM_Financials as source of truth
-  const allFin = (DATA.historicalEvents||[]).filter(r => r.client && r.date);
-  // Also include live events not already in financials
-  const finIds = new Set(allFin.map(r => r.id));
-  const liveOnly = (DATA.events||[]).filter(e => !finIds.has(e.id)).map(e => ({
-    ...e, date: e.eventDate||e.date||'', grossAmount: (e.contractValue||0),
-    balanceDue: e.balance||0, paid: (e.balance||0)===0&&(e.deposit||0)>0
-  }));
-  const allEvents = [...allFin, ...liveOnly]
+  const allEvents = getMergedEvents()
     .filter(r => r.date)
     .sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
