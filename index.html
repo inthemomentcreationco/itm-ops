@@ -4160,7 +4160,7 @@ function renderFinSMM(smmRows, thisYear) {
     <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Individual Events (${evSorted.length})</div>
     <button class="btn btn-gold" style="font-size:11px;padding:6px 14px" onclick="openSMEventModal()">+ Add SMM Event</button>
   </div>
-  ${evSorted.length === 0 ? '<div style="text-align:center;padding:24px;color:var(--muted);font-size:12px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r)">No individual events logged yet. Use the button above to add each SMM event after it happens.</div>' : '<div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--s1)"><th ' + thStyle + '>Date</th><th ' + thStyle + '>Event / Venue</th><th ' + thStyle + '>Contractor</th><th ' + thStyle + '>Hours</th><th ' + thStyle + '>Pay</th><th ' + thStyle + '>Actions</th></tr></thead><tbody>' + evSorted.map(r => { const pay = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0); return '<tr><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.date||r.eventDate||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;font-weight:500">' + (r.notes||r.client||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px">' + ([r.contractorName,r.contractorName2].filter(x=>x&&x!=='-').join(', ')||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.contractorHours||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:' + (pay>0?'var(--amber)':'var(--muted)') + ';font-weight:600">' + (pay>0?'$'+Math.round(pay).toLocaleString():'\u2014') + '</td><td style="padding:10px 12px"><button class="btn btn-outline" style="font-size:10px;padding:2px 8px" data-row="' + JSON.stringify(r).replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '" onclick="openSMEventModal(this.dataset.row)">Edit</button></td></tr>'; }).join('') + '</tbody></table></div>'}
+  ${evSorted.length === 0 ? '<div style="text-align:center;padding:24px;color:var(--muted);font-size:12px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r)">No individual events logged yet. Use the button above to add each SMM event after it happens.</div>' : '<div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--s1)"><th ' + thStyle + '>Date</th><th ' + thStyle + '>Event / Venue</th><th ' + thStyle + '>Contractor</th><th ' + thStyle + '>Hours</th><th ' + thStyle + '>Pay</th><th ' + thStyle + '>Actions</th></tr></thead><tbody>' + evSorted.map(r => { const pay = (parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0); return '<tr><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.date||r.eventDate||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;font-weight:500">' + (r.notes||r.client||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px">' + ([r.contractorName,r.contractorName2].filter(x=>x&&x!=='-').join(', ')||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:var(--muted)">' + (r.contractorHours||'\u2014') + '</td><td style="padding:10px 12px;font-size:12px;color:' + (pay>0?'var(--amber)':'var(--muted)') + ';font-weight:600">' + (pay>0?'$'+Math.round(pay).toLocaleString():'\u2014') + '</td><td style="padding:10px 12px"><button class="btn btn-outline" style="font-size:10px;padding:2px 8px" data-row="' + JSON.stringify(r).replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '" onclick="openSMEventModal(this.dataset.row)">Edit</button> <button class="btn btn-outline" style="font-size:10px;padding:2px 8px;color:var(--red)" data-did="' + (r.id||'') + '" data-dname="' + (r.notes||r.client||'').replace(/"/g,'&quot;') + '" onclick="deleteSMEvent(this.dataset.did,this.dataset.dname)">✕</button></td></tr>'; }).join('') + '</tbody></table></div>'}
   `;
 }
 
@@ -4329,6 +4329,24 @@ async function saveSMEvent(existingId) {
     toast('⚠ Error saving: ' + e.message);
     const btn = document.getElementById('sm-save-btn');
     if (btn) { btn.disabled = false; btn.textContent = '✓ Save'; }
+  }
+}
+
+async function deleteSMEvent(id, name) {
+  if (!id) return;
+  if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+  try {
+    await Promise.all([
+      apiCall('deleteFinancial', { id }),
+      apiCall('saveEvent', { id, client:'_deleted_', eventType:'', eventDate:'', contractValue:0, deposit:0, balance:0, status:'deleted', notes:'' }),
+    ]);
+    DATA.historicalEvents = (DATA.historicalEvents||[]).filter(r => r.id !== id);
+    DATA.events = (DATA.events||[]).filter(e => e.id !== id);
+    toast('✓ Deleted');
+    renderEvents();
+    renderDashboard();
+  } catch(e) {
+    toast('⚠ Error deleting: ' + e.message);
   }
 }
 
