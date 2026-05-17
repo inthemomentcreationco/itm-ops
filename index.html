@@ -4338,7 +4338,7 @@ async function deleteSMEvent(id, name) {
   try {
     await Promise.all([
       apiCall('deleteFinancial', { id }),
-      apiCall('saveEvent', { id, client:'_deleted_', eventType:'', eventDate:'', contractValue:0, deposit:0, balance:0, status:'deleted', notes:'' }),
+      apiCall('deleteEvent', { id }),
     ]);
     DATA.historicalEvents = (DATA.historicalEvents||[]).filter(r => r.id !== id);
     DATA.events = (DATA.events||[]).filter(e => e.id !== id);
