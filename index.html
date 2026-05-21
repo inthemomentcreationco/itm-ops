@@ -3566,6 +3566,26 @@ function persistMarkPaidToSheet(key, date, method) {
   }).catch(function(e){ console.warn('Could not persist mark-paid to sheet:', e); });
 }
 
+// One-time sync: push localStorage contractor paid log to Google Sheet
+async function syncContractorPaidToSheet() {
+  const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+  const existingPayments = DATA.payments || [];
+  const existingIds = new Set(existingPayments.map(p => p.id));
+  const keys = Object.keys(paidLog);
+  if (!keys.length) { toast('No paid records to sync'); return; }
+  let synced = 0, skipped = 0;
+  for (const key of keys) {
+    // Check if already synced (payment ID starts with fpay_key_)
+    const alreadySynced = existingPayments.some(p => p.id && p.id.indexOf('fpay_' + key + '_') === 0);
+    if (alreadySynced) { skipped++; continue; }
+    persistMarkPaidToSheet(key, paidLog[key].date || new Date().toISOString().split('T')[0], paidLog[key].method || 'Unknown');
+    synced++;
+    // Small delay to avoid rate limiting
+    await new Promise(r => setTimeout(r, 200));
+  }
+  toast('✓ Synced ' + synced + ' paid records (' + skipped + ' already synced)');
+}
+
 function toggleSelectAll(toggleId, checked) {
   document.querySelectorAll('.cp-check-' + toggleId).forEach(cb => cb.checked = checked);
 }
