@@ -3326,7 +3326,7 @@ function renderFinancials() {
     ${ft === 'ledger' ? renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) : ''}
     ${ft === 'tax' ? renderFinTax(Q, qLabels, qDue, taxAside, netRev, grossRev, eventCount, byYear, chartYears, maxGross, thisYear, today) : ''}
     ${ft === '1099' ? render1099(allRows, thisYear) : ''}
-    ${ft === 'import' ? renderFinImport(allHist) : ''}
+    ${ft === 'import' ? renderFinImport(DATA.historicalEvents||[]) : ''}
   </div>
   `;
 }
