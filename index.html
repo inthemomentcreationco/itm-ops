@@ -1263,6 +1263,17 @@ async function syncData() {
       }));
     } catch(e) { console.warn('Tasks load failed:', e); }
 
+    // Push contractor paid log + no-charge overrides to server (for daily summary)
+    try {
+      const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+      const noCharge = JSON.parse(localStorage.getItem('itm_pay_overrides') || '{}');
+      const merged = {...paidLog};
+      Object.keys(noCharge).forEach(k => { merged[k] = noCharge[k] || { noCharge: true }; });
+      if (Object.keys(merged).length > 0) {
+        apiCall('syncPaidLog', { paidLog: merged }).catch(e => console.warn('Paid log sync failed:', e));
+      }
+    } catch(e) { console.warn('Paid log sync failed:', e); }
+
     renderAll();
     toast(`Synced: ${DATA.inquiries.length} inquiries · ${DATA.events.length} events · ${DATA.historicalEvents ? DATA.historicalEvents.length : 0} financial records`);
   } else {
