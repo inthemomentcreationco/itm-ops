@@ -7041,6 +7041,23 @@ function renderDeliverablesDetail(eventId) {
     var phaseItems = dels
       .filter(function(d) { return delPhaseKey(d.type) === phase.key; })
       .sort(function(a, b) { return getDelOrd(a) - getDelOrd(b); });
+
+    // Collapse old-style reel_N_edit / reel_N_review / reel_N_final into one row per reel
+    if (phase.key === 'reels') {
+      var seen = {};
+      phaseItems = phaseItems.filter(function(d) {
+        var m = d.type.match(/^reel_(\d+)(?:_|$)/);
+        var num = m ? m[1] : null;
+        if (!num) return true;
+        if (seen[num]) return false;
+        seen[num] = true;
+        return true;
+      }).map(function(d) {
+        var m = d.type.match(/^reel_(\d+)_/); // old-style has trailing underscore+suffix
+        return m ? Object.assign({}, d, { label: 'Reel ' + m[1] }) : d;
+      });
+    }
+
     if (phaseItems.length === 0) return;
 
     html += '<div class="sec-label">' + phase.label + '</div><div style="margin-bottom:16px">';
