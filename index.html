@@ -4475,11 +4475,12 @@ function renderFinImport(allHist) {
       After importing, use Sync to refresh data.
     </div>
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-      <button class="btn btn-gold" id="hb-import-btn" onclick="importHoneyBook()">
-        ${allHist.length > 0 ? `↺ Re-import Clean (${allHist.length} loaded)` : 'Import HoneyBook History (213 events)'}
-      </button>
-      ${allHist.length > 0 ? `<span style="font-size:11px;color:var(--green)">✓ ${allHist.length} records in sheet — use Sync to refresh</span>` : `<span style="font-size:11px;color:var(--muted2)">Not imported yet</span>`}
-      ${allHist.length > 0 ? `<button class="btn btn-outline" onclick="clearHistorical()" style="font-size:11px;padding:4px 10px;color:var(--red)">Clear data</button>` : ''}
+      ${allHist.length > 0
+        ? `<span style="font-size:11px;color:var(--green)">✓ ${allHist.length} records in sheet — use Sync to refresh</span>
+           <button class="btn btn-outline" id="hb-import-btn" onclick="importHoneyBook()" style="font-size:10px;padding:3px 10px;color:var(--muted)">↺ Re-import</button>
+           <button class="btn btn-outline" onclick="clearHistorical()" style="font-size:11px;padding:4px 10px;color:var(--red)">Clear data</button>`
+        : `<button class="btn btn-gold" id="hb-import-btn" onclick="importHoneyBook()">Import HoneyBook History (213 events)</button>
+           <span style="font-size:11px;color:var(--muted2)">Not imported yet</span>`}
     </div>
   </div>
 
@@ -6977,6 +6978,27 @@ function renderDeliverables() {
   });
 }
 
+// ── Deliverable ordering / phase helpers ──
+function delPhaseKey(t) {
+  if (!t) return 'custom';
+  if (t === 'prep_call' || t === 'shot_list' || t.startsWith('pre_')) return 'pre';
+  if (t === 'raws_upload' || t === 'raws_review' || t === 'raws_sent' || t.startsWith('raws_')) return 'raws';
+  if (t.startsWith('reel_')) return 'reels';
+  if (t === 'feedback_sent' || t.startsWith('post_')) return 'post';
+  return 'custom';
+}
+function getDelOrd(d) {
+  var m = (d.notes || '').match(/^_ord:(\d+)\|?/);
+  return m ? parseInt(m[1], 10) : 999999;
+}
+function getDelUserNotes(notes) {
+  return (notes || '').replace(/^_ord:\d+\|?/, '');
+}
+function setDelOrd(d, ord) {
+  var u = getDelUserNotes(d.notes || '');
+  d.notes = '_ord:' + ord + '|' + u;
+}
+
 function renderDeliverablesDetail(eventId) {
   var el = document.getElementById('deliverables-content');
   var dels = (DATA.deliverables || []).filter(function(d) { return d.eventId === eventId; });
@@ -6992,12 +7014,12 @@ function renderDeliverablesDetail(eventId) {
   var barColor = done === total ? 'var(--green)' : 'var(--gold)';
   var dStr = ev.date ? new Date(ev.date + 'T12:00:00').toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'}) : '';
 
-  var phases = [
-    { key: 'pre', label: 'Pre-Event', types: ['prep_call','shot_list'] },
-    { key: 'raws', label: 'Raw Footage', types: ['raws_upload','raws_review','raws_sent'] },
-    { key: 'reels', label: 'Reels', match: function(t) { return t.startsWith('reel_'); } },
-    { key: 'post', label: 'Post-Delivery', types: ['feedback_sent'] },
-    { key: 'custom', label: 'Custom', match: function(t) { return t.startsWith('custom_'); } }
+  var phaseOrder = [
+    { key: 'pre', label: 'Pre-Event' },
+    { key: 'raws', label: 'Raw Footage' },
+    { key: 'reels', label: 'Reels' },
+    { key: 'post', label: 'Post-Delivery' },
+    { key: 'custom', label: 'Custom' }
   ];
 
   var html = '<div style="margin-bottom:16px">'
@@ -7015,15 +7037,14 @@ function renderDeliverablesDetail(eventId) {
     + '<div class="del-progress-bar" style="margin-top:12px"><div class="del-progress-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
     + '</div>';
 
-  phases.forEach(function(phase) {
-    var phaseItems = dels.filter(function(d) {
-      if (phase.match) return phase.match(d.type);
-      return phase.types.indexOf(d.type) >= 0;
-    });
+  phaseOrder.forEach(function(phase) {
+    var phaseItems = dels
+      .filter(function(d) { return delPhaseKey(d.type) === phase.key; })
+      .sort(function(a, b) { return getDelOrd(a) - getDelOrd(b); });
     if (phaseItems.length === 0) return;
 
     html += '<div class="sec-label">' + phase.label + '</div><div style="margin-bottom:16px">';
-    phaseItems.forEach(function(d) {
+    phaseItems.forEach(function(d, idx) {
       var isDone = d.status === 'done';
       var isOverdue = !isDone && d.dueDate && d.dueDate < today;
       var dueLbl = '';
@@ -7031,9 +7052,16 @@ function renderDeliverablesDetail(eventId) {
       else if (d.dueDate) { dueLbl = 'Due ' + new Date(d.dueDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'}); }
       var badgeClass = isDone ? 'done' : isOverdue ? 'overdue' : 'pending';
       var badgeText = isDone ? 'Done' : isOverdue ? 'Overdue' : 'Pending';
+      var upBtn = idx === 0
+        ? '<button style="background:none;border:none;color:var(--muted2);cursor:default;font-size:10px;padding:1px 3px;line-height:1;opacity:0.2" disabled title="Move up">▲</button>'
+        : '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:10px;padding:1px 3px;line-height:1" onclick="moveDeliverable(\'' + d.id + '\',-1)" title="Move up">▲</button>';
+      var dnBtn = idx === phaseItems.length - 1
+        ? '<button style="background:none;border:none;color:var(--muted2);cursor:default;font-size:10px;padding:1px 3px;line-height:1;opacity:0.2" disabled title="Move down">▼</button>'
+        : '<button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:10px;padding:1px 3px;line-height:1" onclick="moveDeliverable(\'' + d.id + '\',1)" title="Move down">▼</button>';
 
       html += '<div class="del-item">'
         + '<input type="checkbox" class="del-cb" ' + (isDone ? 'checked' : '') + ' onchange="toggleDeliverable(\'' + d.id + '\', this.checked)">'
+        + '<div style="display:flex;flex-direction:column;margin-right:4px;gap:1px">' + upBtn + dnBtn + '</div>'
         + '<div class="del-item-info" style="cursor:pointer" onclick="openEditDeliverable(\'' + d.id + '\')">'
         + '  <div class="del-item-label ' + (isDone ? 'done' : '') + '">' + escHtml(d.label) + '</div>'
         + '  <div class="del-item-sub">' + (d.assignee ? escHtml(d.assignee) + ' · ' : '') + dueLbl + '</div>'
@@ -7113,7 +7141,7 @@ function openEditDeliverable(delId) {
     + '  <div class="field"><label class="field-lbl">Due Date</label><input class="field-input" id="edel-due" type="date" value="' + (d.dueDate||'') + '"></div>'
     + '  <div class="field"><label class="field-lbl">Assignee</label><input class="field-input" id="edel-assignee" value="' + escHtml(d.assignee||'') + '" placeholder="e.g. Lauren, Bianca"></div>'
     + '</div>'
-    + '<div class="field" style="margin-bottom:16px"><label class="field-lbl">Notes</label><input class="field-input" id="edel-notes" value="' + escHtml(d.notes||'') + '" placeholder="Optional notes"></div>'
+    + '<div class="field" style="margin-bottom:16px"><label class="field-lbl">Notes</label><input class="field-input" id="edel-notes" value="' + escHtml(getDelUserNotes(d.notes||'')) + '" placeholder="Optional notes"></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-outline" onclick="document.getElementById(\'edit-del-overlay\').remove()">Cancel</button><button class="btn btn-gold" onclick="saveEditDeliverable(\'' + delId + '\')">Save</button></div>'
     + '</div>';
   document.body.appendChild(ov);
@@ -7126,7 +7154,9 @@ async function saveEditDeliverable(delId) {
   d.label = document.getElementById('edel-label').value.trim() || d.label;
   d.dueDate = document.getElementById('edel-due').value || '';
   d.assignee = document.getElementById('edel-assignee').value.trim();
-  d.notes = document.getElementById('edel-notes').value.trim();
+  var userNotes = document.getElementById('edel-notes').value.trim();
+  var ordPrefix = (d.notes || '').match(/^_ord:\d+\|?/);
+  d.notes = ordPrefix ? ordPrefix[0] + userNotes : userNotes;
   try {
     await apiCall('saveDeliverable', { id: d.id, eventId: d.eventId, client: d.client, eventDate: d.eventDate, type: d.type, label: d.label, status: d.status, assignee: d.assignee, dueDate: d.dueDate, completedDate: d.completedDate, notes: d.notes });
     toast('✓ Updated');
@@ -7136,14 +7166,21 @@ async function saveEditDeliverable(delId) {
 }
 
 function openAddDeliverable(eventId) {
-  var ev = (DATA.historicalEvents||[]).find(function(r) { return r.id === eventId; });
   var ov = document.createElement('div');
   ov.id = 'add-del-overlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML = '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:100%">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div style="font-family:\'Cormorant\',serif;font-size:20px;color:var(--cream)">Add Deliverable</div><button onclick="document.getElementById(\'add-del-overlay\').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button></div>'
+    + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Category *</label>'
+    + '<select class="field-input" id="adel-category">'
+    + '<option value="pre">Pre-Event</option>'
+    + '<option value="raws">Raw Footage</option>'
+    + '<option value="reels">Reels</option>'
+    + '<option value="post">Post-Delivery</option>'
+    + '<option value="custom" selected>Custom</option>'
+    + '</select></div>'
     + '<div class="field" style="margin-bottom:12px"><label class="field-lbl">Title *</label><input class="field-input" id="adel-label" placeholder="e.g. Contractor brief call"></div>'
-    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">'
     + '  <div class="field"><label class="field-lbl">Due Date</label><input class="field-input" id="adel-due" type="date"></div>'
     + '  <div class="field"><label class="field-lbl">Assignee</label><input class="field-input" id="adel-assignee" placeholder="e.g. Lauren"></div>'
     + '</div>'
@@ -7156,13 +7193,20 @@ function openAddDeliverable(eventId) {
 async function saveAddDeliverable(eventId) {
   var label = document.getElementById('adel-label').value.trim();
   if (!label) { toast('Title is required'); return; }
+  var cat = document.getElementById('adel-category').value;
+  var ts = Date.now();
+  var typeMap = { pre: 'pre_custom_', raws: 'raws_custom_', reels: 'reel_custom_', post: 'post_custom_', custom: 'custom_' };
+  var typePrefix = typeMap[cat] || 'custom_';
   var ev = (DATA.historicalEvents||[]).find(function(r) { return r.id === eventId; });
+  var siblings = (DATA.deliverables || []).filter(function(d) { return d.eventId === eventId && delPhaseKey(d.type) === cat; });
+  var maxOrd = siblings.reduce(function(m, d) { var o = getDelOrd(d); return o < 999999 ? Math.max(m, o) : m; }, siblings.length * 10);
   var newDel = {
-    id: 'del_' + eventId + '_custom_' + Date.now(),
+    id: 'del_' + eventId + '_' + typePrefix + ts,
     eventId: eventId, client: ev ? ev.client : '', eventDate: ev ? ev.date : '',
-    type: 'custom_' + Date.now(), label: label, status: 'pending',
+    type: typePrefix + ts, label: label, status: 'pending',
     assignee: document.getElementById('adel-assignee').value.trim(),
-    dueDate: document.getElementById('adel-due').value || '', completedDate: '', notes: ''
+    dueDate: document.getElementById('adel-due').value || '', completedDate: '',
+    notes: '_ord:' + (maxOrd + 10) + '|'
   };
   try {
     await apiCall('saveDeliverable', newDel);
@@ -7194,6 +7238,30 @@ async function toggleDeliverable(delId, checked) {
     await apiCall('saveDeliverable', { id: d.id, eventId: d.eventId, client: d.client, eventDate: d.eventDate, type: d.type, label: d.label, status: d.status, assignee: d.assignee, dueDate: d.dueDate, completedDate: d.completedDate, notes: d.notes });
     toast(checked ? '✓ ' + d.label + ' done' : d.label + ' marked pending');
   } catch(e) { toast('Save failed: ' + e.message); d.status = checked ? 'pending' : 'done'; }
+  renderDeliverables();
+}
+
+async function moveDeliverable(delId, dir) {
+  var d = (DATA.deliverables || []).find(function(x) { return x.id === delId; });
+  if (!d) return;
+  var phase = delPhaseKey(d.type);
+  var siblings = (DATA.deliverables || [])
+    .filter(function(x) { return x.eventId === d.eventId && delPhaseKey(x.type) === phase; })
+    .sort(function(a, b) { return getDelOrd(a) - getDelOrd(b); });
+  var idx = siblings.findIndex(function(x) { return x.id === delId; });
+  var swapIdx = idx + dir;
+  if (swapIdx < 0 || swapIdx >= siblings.length) return;
+  var other = siblings[swapIdx];
+  var ordA = getDelOrd(d);    if (ordA === 999999) ordA = idx * 10;
+  var ordB = getDelOrd(other); if (ordB === 999999) ordB = swapIdx * 10;
+  setDelOrd(d, ordB);
+  setDelOrd(other, ordA);
+  try {
+    await Promise.all([
+      apiCall('saveDeliverable', { id: d.id, eventId: d.eventId, client: d.client, eventDate: d.eventDate, type: d.type, label: d.label, status: d.status, assignee: d.assignee, dueDate: d.dueDate, completedDate: d.completedDate, notes: d.notes }),
+      apiCall('saveDeliverable', { id: other.id, eventId: other.eventId, client: other.client, eventDate: other.eventDate, type: other.type, label: other.label, status: other.status, assignee: other.assignee, dueDate: other.dueDate, completedDate: other.completedDate, notes: other.notes })
+    ]);
+  } catch(e) { toast('⚠ Reorder failed: ' + e.message); return; }
   renderDeliverables();
 }
 
