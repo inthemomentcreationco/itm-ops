@@ -3538,63 +3538,9 @@ async function confirmContractorPaid(key) {
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
   document.getElementById('contractor-paid-modal').remove();
   toast('✓ Marked as paid via ' + method);
-  // Also persist to ITM_Payments sheet so Team page and Google Sheets stay in sync
-  persistMarkPaidToSheet(key, date, method);
   renderFinancials();
   renderDashboard();
   renderContractors();
-}
-
-function persistMarkPaidToSheet(key, date, method) {
-  // key format: eventId_1 or eventId_2
-  var parts = key.split('_');
-  var slot = parts.pop();
-  var eventId = parts.join('_');
-  var hist = (DATA.historicalEvents||[]).find(function(r){return r.id===eventId;});
-  if (!hist) return;
-  var cName = slot === '2' ? hist.contractorName2 : hist.contractorName;
-  var cHours = slot === '2' ? hist.contractorHours2 : hist.contractorHours;
-  var cPay = slot === '2' ? (parseFloat(hist.contractorPay2)||0) : (parseFloat(hist.contractorPay)||0);
-  if (!cName || cPay <= 0) return;
-  // Find contractor ID from name
-  var cMatch = (DATA.contractors||[]).find(function(c){return c.name===cName;});
-  var contractorId = cMatch ? cMatch.id : 'unknown';
-  var payment = {
-    id: 'fpay_' + key + '_' + Date.now(),
-    contractorId: contractorId,
-    eventId: eventId,
-    event: hist.client || '',
-    eventDate: hist.date || '',
-    hours: parseFloat(cHours) || 0,
-    travelShare: 0,
-    amount: cPay,
-    date: date,
-    method: method
-  };
-  apiCall('savePayment', payment).then(function(){
-    DATA.payments = DATA.payments || [];
-    DATA.payments.push(payment);
-  }).catch(function(e){ console.warn('Could not persist mark-paid to sheet:', e); });
-}
-
-// One-time sync: push localStorage contractor paid log to Google Sheet
-async function syncContractorPaidToSheet() {
-  const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
-  const existingPayments = DATA.payments || [];
-  const existingIds = new Set(existingPayments.map(p => p.id));
-  const keys = Object.keys(paidLog);
-  if (!keys.length) { toast('No paid records to sync'); return; }
-  let synced = 0, skipped = 0;
-  for (const key of keys) {
-    // Check if already synced (payment ID starts with fpay_key_)
-    const alreadySynced = existingPayments.some(p => p.id && p.id.indexOf('fpay_' + key + '_') === 0);
-    if (alreadySynced) { skipped++; continue; }
-    persistMarkPaidToSheet(key, paidLog[key].date || new Date().toISOString().split('T')[0], paidLog[key].method || 'Unknown');
-    synced++;
-    // Small delay to avoid rate limiting
-    await new Promise(r => setTimeout(r, 200));
-  }
-  toast('✓ Synced ' + synced + ' paid records (' + skipped + ' already synced)');
 }
 
 function toggleSelectAll(toggleId, checked) {
@@ -3652,8 +3598,6 @@ function confirmAllContractorPaid() {
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
   keys.forEach(key => {
     paidLog[key] = { date, method, markedAt: new Date().toISOString() };
-    // Also persist each to ITM_Payments sheet
-    persistMarkPaidToSheet(key, date, method);
   });
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
   document.getElementById('contractor-paid-modal').remove();
@@ -4331,6 +4275,26 @@ async function saveSMEvent(existingId) {
     toast('⚠ Error saving: ' + e.message);
     const btn = document.getElementById('sm-save-btn');
     if (btn) { btn.disabled = false; btn.textContent = '✓ Save'; }
+  }
+}
+
+async function deleteRegularEvent(id, name) {
+  if (!id) return;
+  if (!confirm('Delete "' + name + '"? This removes it from both Financials and Events sheets. Cannot be undone.')) return;
+  try {
+    await Promise.all([
+      apiCall('deleteFinancial', { id }),
+      apiCall('deleteEvent', { id }),
+    ]);
+    DATA.historicalEvents = (DATA.historicalEvents||[]).filter(r => r.id !== id);
+    DATA.events = (DATA.events||[]).filter(e => e.id !== id);
+    localStorage.setItem('itm_historical', JSON.stringify(DATA.historicalEvents));
+    toast('✓ Deleted');
+    renderEvents();
+    renderDashboard();
+    renderFinancials();
+  } catch(e) {
+    toast('⚠ Error deleting: ' + e.message);
   }
 }
 
@@ -6550,6 +6514,7 @@ function renderEvents() {
             <span style="font-size:11px;color:${progColor}">${prog.total>2?prog.done+'/'+prog.total+' delivered':prog.hasPkg?(isPast?'Track deliverables':'Upcoming'):isPast?'Set package to track':'Upcoming'}</span>
             <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openDeliverableModal('${r.id}','${(r.client||'').replace(/'/g,"\\'")}')">📋 Deliverables</button>
             <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
+            <button class="btn btn-outline" style="font-size:10px;padding:2px 8px;color:var(--red)" data-did="${r.id}" data-dname="${(r.client||'').replace(/"/g,'&quot;')}" onclick="deleteRegularEvent(this.dataset.did,this.dataset.dname)">✕</button>
           </div>
         </div>
         <div style="text-align:right;flex-shrink:0">
