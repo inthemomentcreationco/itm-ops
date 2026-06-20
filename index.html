@@ -881,7 +881,9 @@ async function apiCall(action, payload) {
   const secret = _secret || getSecret();
   if (!secret) throw new Error('No access secret. Please refresh and enter your password.');
 
-  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','sendEmail','getGmailThreads','getGmailThread','aiGmailDraft'];
+  // NOTE: sendEmail intentionally NOT here — it must go via POST so long email
+  // bodies don't ride the URL query string (GET URLs have length limits)
+  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','getGmailThreads','getGmailThread','aiGmailDraft'];
   const isRead = readActions.includes(action);
 
   let res;
@@ -1115,6 +1117,11 @@ async function syncData() {
         method:       p.method,
       }));
 
+      // Expose raw assignment + expense rows (read by dashboard 60-day list,
+      // event detail, and the Financials → Expenses tab)
+      DATA.assignments = assignments || [];
+      DATA.expenses    = _expenses || [];
+
       // Rebuild contractorAssignments on each event from the assignments tab
       const assignRows = assignments || [];
       DATA.events.forEach(ev => {
@@ -1280,11 +1287,15 @@ async function syncData() {
     btn.textContent = '↻ Sync';
     btn.disabled = false;
     if (!CFG.scriptUrl) {
+      // Never configured — demo data is fine here
       toast('No Apps Script URL — showing demo data. Go to Settings to connect.');
+      loadDemoData();
     } else {
-      toast('Could not sync. Check your Apps Script URL in Settings.');
+      // Sync failed — keep whatever real data we have (cached financials,
+      // previously loaded inquiries). NEVER overwrite with fake demo data.
+      toast('⚠ Sync failed — showing last loaded data. Tap Sync to retry.');
+      renderAll();
     }
-    loadDemoData();
   }
 }
 
@@ -2014,6 +2025,20 @@ function _renderDashboard() {
   const monthName = today.toLocaleDateString('en-US', { month:'long' });
   const lastMonthName = new Date(lastMonthYear, lastMonth).toLocaleDateString('en-US', { month:'long' });
 
+  // Register drill-down data (referenced by key from the stat cards below)
+  setDrill('dashConflicts', 'Date Conflicts — Inquiry vs Booked',
+    conflicts.flatMap(c => c.inqs.map(i => ({ name: i.name, eventDate: c.date, eventType: i.eventType, budget: i.budget, stage: i.stage }))), 'inquiries');
+  setDrill('dashDoubleBooked', 'Double-Booked Dates',
+    doubleBooked.flatMap(d => d.evts.map(e => ({ name: e.title, eventDate: d.date, eventType: 'Calendar event', budget: '', stage: 'double-booked' }))), 'inquiries');
+  setDrill('dashUpcoming', 'Booked Events — Next 60 Days',
+    upcomingEvents.map(r=>({name:r.client,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:(r.contractValue||r.grossAmount||0),balanceDue:r.balance||r.balanceDue||0,paid:!r.balance&&(r.deposit||0)>0})), 'events');
+  setDrill('dashInvoices', 'Outstanding Invoices — Clients Owe You',
+    unpaidInvoices.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:false})), 'invoices');
+  setDrill('dashMonthRev', monthName + ' Revenue',
+    thisMonthRows.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})), 'events');
+  setDrill('dashYtd', thisYear + ' Gross Revenue — All Events',
+    ytdRows.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})), 'events');
+
   document.getElementById('dash-content').innerHTML = `
 
     <!-- ROW 1: OPERATIONS ALERTS -->
@@ -2023,17 +2048,17 @@ function _renderDashboard() {
         <div class="stat-val">${needsResponse.length}</div>
         <div class="stat-sub">${needsResponse.length?'tap to respond':'All caught up ✓'}</div>
       </div>
-      <div class="stat-card ${conflicts.length?'red':'green'}" style="cursor:${conflicts.length?'pointer':'default'}" onclick="${conflicts.length?`showDrill('Date Conflicts — Inquiry vs Booked',${JSON.stringify(conflicts.map(r=>({name:r.name,eventDate:r.eventDate,eventType:r.eventType,budget:r.budget,stage:r.stage})))}, 'inquiries')`:''}">
+      <div class="stat-card ${conflicts.length?'red':'green'}" style="cursor:${conflicts.length?'pointer':'default'}" onclick="${conflicts.length?`openDrill('dashConflicts')`:''}">
         <div class="stat-lbl">Date Conflicts</div>
         <div class="stat-val">${conflicts.length}</div>
         <div class="stat-sub">${conflicts.length?'tap to view':'None ✓'}</div>
       </div>
-      <div class="stat-card ${doubleBooked.length?'amber':'green'}" style="cursor:${doubleBooked.length?'pointer':'default'}" onclick="${doubleBooked.length?`showDrill('Double-Booked Dates',${JSON.stringify(doubleBooked.map(r=>({name:r.client||r.name,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')`:''}">
+      <div class="stat-card ${doubleBooked.length?'amber':'green'}" style="cursor:${doubleBooked.length?'pointer':'default'}" onclick="${doubleBooked.length?`openDrill('dashDoubleBooked')`:''}">
         <div class="stat-lbl">Double-Booked</div>
         <div class="stat-val">${doubleBooked.length}</div>
         <div class="stat-sub">${doubleBooked.length?'tap to view':'None ✓'}</div>
       </div>
-      <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('Booked Events — Next 60 Days',${JSON.stringify(upcomingEvents.map(r=>({name:r.client,eventDate:r.eventDate||r.date,eventType:r.eventType,grossAmount:(r.contractValue||r.grossAmount||0),balanceDue:r.balance||r.balanceDue||0,paid:!r.balance&&(r.deposit||0)>0})))}, 'events')">
+      <div class="stat-card gold" style="cursor:pointer" onclick="openDrill('dashUpcoming')">
         <div class="stat-lbl">Booked Events</div>
         <div class="stat-val">${upcomingEvents.length}</div>
         <div class="stat-sub">in next 60 days</div>
@@ -2042,7 +2067,7 @@ function _renderDashboard() {
 
     <!-- ROW 2: FINANCIAL ALERTS -->
     <div class="stats-row" style="margin-bottom:20px">
-      <div class="stat-card ${totalOwedToLauren>0?'amber':'green'}" style="cursor:pointer" onclick="showDrill('Outstanding Invoices — Clients Owe You',${JSON.stringify(unpaidInvoices.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:false})))}, 'invoices')">
+      <div class="stat-card ${totalOwedToLauren>0?'amber':'green'}" style="cursor:pointer" onclick="openDrill('dashInvoices')">
         <div class="stat-lbl">Outstanding Invoices</div>
         <div class="stat-val">$${Math.round(totalOwedToLauren).toLocaleString()}</div>
         <div class="stat-sub">${unpaidInvoices.length} client${unpaidInvoices.length!==1?'s':''} owe money</div>
@@ -2052,14 +2077,14 @@ function _renderDashboard() {
         <div class="stat-val">$${Math.round(owedContractors).toLocaleString()}</div>
         <div class="stat-sub">from past events</div>
       </div>
-      <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('${monthName} Revenue',${JSON.stringify(thisMonthRows.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
+      <div class="stat-card gold" style="cursor:pointer" onclick="openDrill('dashMonthRev')">
         <div class="stat-lbl">${monthName} Revenue</div>
         <div class="stat-val">$${Math.round(thisMonthRev).toLocaleString()}</div>
         <div class="stat-sub" style="color:${momChange===null?'var(--muted2)':momChange>=0?'var(--green)':'var(--red)'}">
           ${momChange===null?'vs —':momChange>=0?`▲ ${Math.abs(Math.round(momChange))}% vs ${lastMonthName}`:`▼ ${Math.abs(Math.round(momChange))}% vs ${lastMonthName}`}
         </div>
       </div>
-      <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="showDrill('${thisYear} Gross Revenue — All Events',${JSON.stringify(ytdRows.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
+      <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="openDrill('dashYtd')">
         <div class="stat-lbl">${thisYear} Gross YTD</div>
         <div class="stat-val" style="color:var(--cream)">$${(ytdGross/1000).toFixed(1)}k</div>
         <div class="stat-sub" style="color:${ytdGross>=(FIN.revenueGoal*(thisMonth+1)/12)?'var(--green)':'var(--red)'}">
@@ -2416,6 +2441,7 @@ function openDetail(id) {
       <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
         <button class="btn btn-gold" style="font-size:11px" onclick="fillTemplate('${inq.id}','available')">✓ We're Available</button>
         <button class="btn btn-outline" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="fillTemplate('${inq.id}','booked')">✗ We're Booked</button>
+        <button class="btn btn-outline" style="font-size:11px" onclick="aiDraftEmail('${inq.id}')">✨ AI Draft</button>
       </div>
       <div class="email-subj" id="email-subj-${inq.id}">Subject: </div>
       <textarea id="email-body-${inq.id}" style="width:100%;min-height:200px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;line-height:1.8;color:var(--cream);font-family:'Outfit',sans-serif;resize:vertical;box-sizing:border-box;margin-top:6px" placeholder="Click a template above or type your response here..."></textarea>
@@ -2435,6 +2461,14 @@ function openDetail(id) {
 }
 
 // ── DRILL-DOWN MODAL ──────────────────────────────────────────────
+// Drill rows are stored in this registry and referenced by key from onclick.
+// (Inlining JSON.stringify into an onclick="" attribute breaks the moment the
+// JSON contains a double quote — the attribute terminates early and the click
+// throws a SyntaxError.)
+window._drills = {};
+function setDrill(key, title, rows, type) { window._drills[key] = { title: title, rows: rows, type: type }; }
+function openDrill(key) { var d = window._drills[key]; if (d) showDrill(d.title, d.rows, d.type); }
+
 function showDrill(title, rows, type) {
   document.getElementById('drillTitle').innerHTML = title + ' <button class="panel-close" onclick="closeDrill()">✕</button>';
   const body = document.getElementById('drillBody');
@@ -2667,15 +2701,42 @@ async function bookInquiry(id) {
     notes:         '',
   };
 
+  // Also create the ITM_Financials row so the booking shows up in invoices,
+  // revenue, and the merged Events view (same dual-write as saveNewEvent).
+  // saveFinancial requires a date, so skip it for date-TBD inquiries.
+  const finDate = normalizeDate(inq.eventDate) || '';
+  const fin = {
+    id:          event.id,
+    date:        finDate,
+    client:      inq.name,
+    eventType:   inq.eventType || '',
+    package:     inq.package || '',
+    packageHours: hours,
+    grossAmount: event.contractValue,
+    hbFees:      0,
+    travelFee:   0,
+    deposit:     0,
+    balanceDue:  event.contractValue,
+    paid:        false,
+    source:      'manual',
+    notes:       '',
+  };
+
   // Save to Apps Script / Google Sheet
   try {
-    await apiCall('saveEvent', event);
+    const saves = [apiCall('saveEvent', event)];
+    if (finDate) saves.push(apiCall('saveFinancial', fin));
+    await Promise.all(saves);
     toast('Event saved to Google Sheet ✓');
   } catch(e) {
     toast('Warning: could not save event to sheet. ' + e.message);
   }
 
   DATA.events.push(event);
+  if (finDate) {
+    DATA.historicalEvents = DATA.historicalEvents || [];
+    DATA.historicalEvents.push({ ...fin, contractValue: fin.grossAmount, netRevenue: fin.grossAmount });
+  }
   inq.stage = 'booked';
 
   // Also mark stage in the inquiry sheet
@@ -3256,6 +3317,15 @@ function renderFinancials() {
   // ── FIN TAB state ──
   const ft = window._finTab || 'invoices';
 
+  // Register drill-down data (referenced by key from the stat cards below)
+  const finDrillRows = sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid}));
+  setDrill('finGross', thisYear + ' Gross Revenue — All Events', finDrillRows, 'events');
+  setDrill('finContractorCosts', thisYear + ' Contractor Costs',
+    sortedYear.filter(r=>(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0)>0).map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid,contractorName:r.contractorName,contractorName2:r.contractorName2,contractorPay:r.contractorPay,contractorPay2:r.contractorPay2})), 'contractors');
+  setDrill('finNet', thisYear + ' Net Revenue — All Events', finDrillRows, 'events');
+  setDrill('finTax', thisYear + ' Tax Set-Aside Breakdown', finDrillRows, 'events');
+  setDrill('finTakeHome', thisYear + ' Take-Home Estimate — All Events', finDrillRows, 'events');
+
   document.getElementById('fin-content').innerHTML = `
 
   <!-- DISCLAIMER -->
@@ -3265,27 +3335,27 @@ function renderFinancials() {
 
   <!-- TOP STATS -->
   <div class="stats-row" style="margin-bottom:8px">
-    <div class="stat-card gold" style="cursor:pointer" onclick="showDrill('${thisYear} Gross Revenue — All Events',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
+    <div class="stat-card gold" style="cursor:pointer" onclick="openDrill('finGross')">
       <div class="stat-lbl">${thisYear} Gross Revenue</div>
       <div class="stat-val">$${(grossRev/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:${onTrack?'var(--green)':'var(--red)'};margin-top:4px">${onTrack?'✓ On pace':'⚠ Behind pace'} · ${eventCount} events</div>
     </div>
-    <div class="stat-card amber" style="cursor:pointer" onclick="showDrill('${thisYear} Contractor Costs',${JSON.stringify(sortedYear.filter(r=>(parseFloat(r.contractorPay)||0)+(parseFloat(r.contractorPay2)||0)>0).map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid,contractorName:r.contractorName,contractorName2:r.contractorName2,contractorPay:r.contractorPay,contractorPay2:r.contractorPay2})))}, 'contractors')">
+    <div class="stat-card amber" style="cursor:pointer" onclick="openDrill('finContractorCosts')">
       <div class="stat-lbl">Contractor Costs</div>
       <div class="stat-val">$${(contrCost/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">${grossRev>0?Math.round(contrCost/grossRev*100):0}% of gross · $${Math.round(expTotal).toLocaleString()} expenses</div>
     </div>
-    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="showDrill('${thisYear} Net Revenue — All Events',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
+    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="openDrill('finNet')">
       <div class="stat-lbl">Net Revenue</div>
       <div class="stat-val" style="color:var(--cream)">$${(netRev/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">After contractors & expenses</div>
     </div>
-    <div class="stat-card" style="background:var(--redbg);border-color:var(--redborder);cursor:pointer" onclick="showDrill('${thisYear} Tax Set-Aside Breakdown',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
+    <div class="stat-card" style="background:var(--redbg);border-color:var(--redborder);cursor:pointer" onclick="openDrill('finTax')">
       <div class="stat-lbl" style="color:var(--red)">Tax Set Aside (~${Math.round(FIN.taxRate*100)}%)</div>
       <div class="stat-val" style="color:var(--red)">$${(taxAside/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:var(--muted2);margin-top:4px">~$${Math.round(taxAside/4/100)*100}/quarter</div>
     </div>
-    <div class="stat-card green" style="cursor:pointer" onclick="showDrill('${thisYear} Take-Home Estimate — All Events',${JSON.stringify(sortedYear.map(r=>({name:r.client,eventDate:r.date||r.eventDate,eventType:r.eventType,grossAmount:r.grossAmount||0,balanceDue:r.balanceDue||0,paid:r.paid})))}, 'events')">
+    <div class="stat-card green" style="cursor:pointer" onclick="openDrill('finTakeHome')">
       <div class="stat-lbl">Take-Home (Est.)</div>
       <div class="stat-val">$${(postTax/1000).toFixed(1)}k</div>
       <div style="font-size:10px;color:${postTax>=FIN.ownSalaryGoal?'var(--green)':'var(--red)'};margin-top:4px">${postTax>=FIN.ownSalaryGoal?'✓ Meets goal':'⚠ Below goal'} of $${(FIN.ownSalaryGoal/1000).toFixed(0)}k</div>
@@ -3638,7 +3708,7 @@ function renderFinExpenses(expenses, thisYear) {
   </div>` : ''}
   <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Vendor</th><th>Amount</th><th>Recurring</th></tr></thead>
+      <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Vendor</th><th>Amount</th><th>Recurring</th><th></th></tr></thead>
       <tbody>
         ${yearExp.length ? yearExp.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(ex=>`<tr>
           <td style="font-size:11px">${ex.date?new Date(ex.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—'}</td>
@@ -3647,7 +3717,8 @@ function renderFinExpenses(expenses, thisYear) {
           <td style="color:var(--muted2);font-size:11px">${ex.vendor||'—'}</td>
           <td style="color:var(--red);font-weight:600">$${(parseFloat(ex.amount)||0).toLocaleString()}</td>
           <td style="font-size:11px;color:var(--muted2)">${ex.recurring?'✓ '+ex.frequency:'—'}</td>
-        </tr>`).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px">No expenses logged for ${thisYear} — sync or add one above</td></tr>`}
+          <td><button style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:12px;padding:4px" onclick="deleteExpenseRow('${ex.id}')" title="Delete expense">✕</button></td>
+        </tr>`).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">No expenses logged for ${thisYear} — sync or add one above</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -4260,10 +4331,13 @@ async function saveSMEvent(existingId) {
 
   try {
     await Promise.all(saves);
+    // Remove any existing local copies first — on EDIT this previously pushed
+    // duplicates, double-counting the event until the next sync
+    DATA.events = (DATA.events||[]).filter(e => e.id !== id);
     DATA.events.push(ev);
-    DATA.assignments = DATA.assignments || [];
+    DATA.assignments = (DATA.assignments || []).filter(a => a.eventId !== id);
     assignments.forEach(a => DATA.assignments.push(a));
-    DATA.historicalEvents = DATA.historicalEvents || [];
+    DATA.historicalEvents = (DATA.historicalEvents || []).filter(r => r.id !== id);
     DATA.historicalEvents.push({...payload, contractValue: 0, netRevenue: 0});
     document.getElementById('sm-event-modal').remove();
     toast('✓ ' + company + ' event saved');
@@ -5190,6 +5264,19 @@ async function saveExpenseFromModal(id) {
     renderFinancials();
     renderDashboard();
   } catch(e) { toast('Error: ' + e.message); }
+}
+
+async function deleteExpenseRow(id) {
+  const ex = (DATA.expenses||[]).find(e => e.id === id);
+  if (!ex) return;
+  if (!confirm('Delete expense "' + (ex.description||'') + '" ($' + (parseFloat(ex.amount)||0).toLocaleString() + ')?')) return;
+  try {
+    await apiCall('deleteExpense', { id });
+    DATA.expenses = (DATA.expenses||[]).filter(e => e.id !== id);
+    toast('✓ Expense deleted');
+  } catch(e) { toast('Delete failed: ' + e.message); }
+  renderFinancials();
+  renderDashboard();
 }
 
 // ════════════════════════════════ DELIVERABLES ════════════════════════════════
@@ -6708,7 +6795,8 @@ function showPage(name) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
-  document.querySelectorAll('.nav-btn').forEach(b=>{ if(b.textContent.toLowerCase().includes(name)) b.classList.add('active'); });
+  const navLabel = name === 'contractors' ? 'team' : name; // Team tab's page id is 'contractors'
+  document.querySelectorAll('.nav-btn').forEach(b=>{ if(b.textContent.toLowerCase().includes(navLabel)) b.classList.add('active'); });
   if (name==='inquiries') renderInquiries();
   if (name==='events') renderEvents();
   if (name==='deliverables') renderDeliverables();
