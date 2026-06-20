@@ -536,9 +536,12 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 
 <!-- INQUIRIES -->
 <div class="page" id="page-inquiries">
+  <div id="inq-view-switcher" style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap"></div>
   <div id="inq-content">
     <div class="loading"><div class="spinner"></div> Loading inquiries...</div>
   </div>
+  <div id="planner-content" style="display:none"></div>
+  <div id="prospective-content" style="display:none"></div>
 </div>
 
 <!-- EVENTS -->
@@ -575,6 +578,8 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
     <div class="empty"><div class="empty-icon">📅</div><div class="empty-msg">Connect Google Calendar to get started.<br><br><button class="btn btn-gold" onclick="showPage('calendar');connectGoogleCalendar()" style="margin-top:12px">Connect Google Calendar</button></div></div>
   </div>
 </div>
+
+<!-- Planner + Prospective now live as views INSIDE the Inquiries tab (see #inq-view-switcher) -->
 
 <!-- SETTINGS -->
 <div class="page" id="page-settings">
@@ -815,7 +820,8 @@ let CFG = {
   calendarId:   '',
   hbCalendarId: '',
   scriptUrl:    'https://script.google.com/macros/s/AKfycbztxKA-9UXBUQuifMsTfRuU7k9qrp_w3msGpUwrU6iEVvYRBvVL0M_hXuR7WPQ0fva2/exec',   // Apps Script Web App URL
-  connected:    false
+  connected:    false,
+  revenueGoal:  150000   // annual prospective-revenue target (Planner / Prospective tabs)
 };
 
 // Secret stored in localStorage only — never in source code
@@ -1066,6 +1072,9 @@ async function syncData() {
             vision:     get('vision','aesthetic','describe','dream','notes','message'),
             source:     get('hear about','referral','referred','source','how did'),
             stage:      get('stage') || 'new',
+            planStatus: get('planStatus'),
+            nextFollowUp:  get('nextFollowUp'),
+            followUpCount: get('followUpCount'),
             _rowIndex:  i + 1,
           };
         });
@@ -1192,6 +1201,7 @@ async function syncData() {
 
   // 4. Re-score all inquiries
   // Merge any stage updates from events back into inquiries
+  clearBookingPrefs();   // rebuild booking-derived VIP/venue lists from fresh data
   DATA.inquiries.forEach(inq => {
     const booked = DATA.events.find(e => e.inquiryId === inq.id);
     if (booked) inq.stage = 'booked';
@@ -1312,6 +1322,7 @@ function loadDemoData() {
     { id:'d4', timestamp: new Date(Date.now()-1000*3600*50).toISOString(), email:'harper@example.com', name:'Harper & Noah Williams', eventDate: add(120), eventType:'Wedding', package:"Full On Paparazzi (8 hour coverage for events, 12 hour coverage for weddings)", location:'Willow Creek Estate, Washington DC', instagram:'@harperwilliams', planner:'Yes - Planner: Kate Morrison Events', budget:'$4,000', photoVideo:'Photographer and videographer both booked', vision:'Golden hour, romantic, slow-mo everything', source:'Client Referral', stage:'new' },
     { id:'d5', timestamp: new Date(Date.now()-1000*3600*1).toISOString(), email:'party@example.com', name:'Zoe Anderson', eventDate: add(30), eventType:'Birthday Party/Bridal Shower/Engagement Party, etc.', package:"Just a little Sumthin'", location:'Private Residence, McLean VA', instagram:'@zoea', planner:'N/A', budget:'$500', photoVideo:'No', vision:'Fun bachelorette vibes', source:'Instagram', stage:'new' },
   ];
+  clearBookingPrefs();
   DATA.inquiries.forEach(inq => score(inq));
   DATA.bookedDates = [{ date: add(120), label: 'Foster Wedding' }];
   renderAll();
@@ -1319,15 +1330,92 @@ function loadDemoData() {
 
 // ════════════════════════════════ SCORING ENGINE ════════════════════════════════
 const PACKAGE_PRICE = {
-  wedding: { "just a little": 2400, "happy medium": 2600, "full on paparazzi": 3000 },
-  event:   { "just a little": 2400, "happy medium": 2600, "full on paparazzi": 3000 },
+  wedding: { "just a little": 2600, "happy medium": 2800, "full on paparazzi": 3200 },
+  event:   { "just a little": 2600, "happy medium": 2800, "full on paparazzi": 3200 },
 };
 
-// VIP planners — automatic yes if available. Names are lowercased for matching.
+// VIP seed list — always VIP regardless of booking count (covers pre-dashboard history
+// the data can't see yet). Matched against the planner OR client field. Lowercased.
 const VIP_PLANNERS = [
-  'ida rose', 'laura held', 'jamesa',
-  // Add more VIP planners here as relationships develop
+  'ida rose', 'laura held', 'jamesa', 'edwin hernandez', 'patrick scully',
+  // Lauren will expand this with her curated VIP planner/photographer list
 ];
+
+// Tuning constants (Lauren's priorities — see project_itm_scoring memo)
+const VIP_BOOKING_THRESHOLD     = 3;       // booked-with N+ times → auto-VIP
+const VENUE_BOOKING_THRESHOLD   = 3;       // booked-at  N+ times → preferred venue
+const FOLLOWER_NOPLANNER_OVERRIDE = 50000; // ≥ this lifts the no-planner-wedding auto-decline
+
+// Booking-derived VIP names + preferred venues, computed ONCE from REAL bookings.
+// Lauren doesn't mark inquiries "booked" in the dashboard, so we can't rely on stage.
+// Instead: take each actual booking (financials/events have client + date), find the
+// matching inquiry by client name + date, and read the planner/venue off that inquiry.
+// A planner/client/venue that recurs across bookings → VIP / preferred. Cached; cleared on sync.
+let _bookingPrefsCache = null;
+function clearBookingPrefs(){ _bookingPrefsCache = null; }
+function buildBookingPrefs(){
+  if (_bookingPrefsCache) return _bookingPrefsCache;
+  const vipCounts = {}, venueCounts = {};
+  const nameKey  = s => String(s||'').toLowerCase().trim();
+  const venueKey = s => String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+  const junk = /^(n\/?a|none|tbd|no|yes|unknown|n a|\-)?$/;
+  const bumpVip = k => { k = nameKey(k); if (k && k.length>1 && !junk.test(k)) vipCounts[k] = (vipCounts[k]||0)+1; };
+  const bumpVenue = k => { k = venueKey(k); if (k && k.length>2 && !junk.test(k)) venueCounts[k] = (venueCounts[k]||0)+1; };
+
+  const inqs = DATA.inquiries || [];
+  // Find the inquiry that became a given booking, by fuzzy client name + event date
+  function findInquiryFor(client, date){
+    const c = nameKey(client); if (!c) return null;
+    const cFirst = c.split(/[&,]/)[0].trim();
+    const d = normalizeDate(date);
+    return inqs.find(i => {
+      const ic = nameKey(i.name); if (!ic) return false;
+      const idt = normalizeDate(i.eventDate);
+      const nameMatch = ic.includes(cFirst) || c.includes(ic.split(/[&,]/)[0].trim());
+      const dateMatch = !d || !idt || d === idt;   // match on name alone if a date is missing
+      return nameMatch && dateMatch;
+    }) || null;
+  }
+
+  // Real bookings = financials (client + date) + live events (client + date + venue)
+  const bookings = [];
+  (DATA.historicalEvents || []).forEach(f => { if (f.client) bookings.push({ client:f.client, date:f.date||f.eventDate, location:f.location }); });
+  (DATA.events || []).forEach(e => { if (e.client) bookings.push({ client:e.client, date:e.eventDate||e.date, location:e.location }); });
+
+  // Dedupe the same event appearing in both financials & events
+  const seen = new Set();
+  bookings.forEach(b => {
+    const key = nameKey(b.client) + '|' + normalizeDate(b.date);
+    if (seen.has(key)) return; seen.add(key);
+    bumpVip(b.client);                 // client name (catches a planner who books directly)
+    if (b.location) bumpVenue(b.location);
+    const inq = findInquiryFor(b.client, b.date);   // recover the planner + venue from the inquiry
+    if (inq) { bumpVip(inq.planner); if (inq.location) bumpVenue(inq.location); }
+  });
+
+  const vip = new Set(), venues = new Set();
+  Object.keys(vipCounts).forEach(k => { if (vipCounts[k] >= VIP_BOOKING_THRESHOLD) vip.add(k); });
+  Object.keys(venueCounts).forEach(k => { if (venueCounts[k] >= VENUE_BOOKING_THRESHOLD) venues.add(k); });
+  _bookingPrefsCache = { vip, venues };
+  return _bookingPrefsCache;
+}
+
+// Location desirability (DC home base): DC > VA > International > MD > major US metro > remote.
+function locationTier(loc){
+  const l = String(loc||'').toLowerCase();
+  if(!l || l.length<2) return { pts:9, detail:'No location given' };
+  if(/london|paris|rome|italy|france|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana|tulum|greece|spain|portugal|ireland|tuscany|amalfi|bali|dubai|abroad|international|overseas|costa rica|santorini/i.test(l))
+    return { pts:16, detail:'International — built-in travel + strong marketing' };
+  if(/washington.?dc|district of columbia|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l))
+    return { pts:18, detail:'Washington DC — home turf, ideal' };
+  if(/arlington|alexandria|crystal city|clarendon|falls church|mclean|fairfax|reston|herndon|vienna|tysons|\bva\b|virginia|richmond|charlottesville|norfolk|virginia beach|fredericksburg|loudoun|leesburg|middleburg/i.test(l))
+    return { pts:16, detail:'Virginia (DMV) — close & preferred' };
+  if(/bethesda|chevy chase|silver spring|takoma|college park|hyattsville|rockville|gaithersburg|germantown|annapolis|baltimore|\bmd\b|maryland|potomac|frederick|columbia md/i.test(l))
+    return { pts:13, detail:'Maryland (DMV) — close, workable' };
+  if(/new york|nyc|manhattan|brooklyn|jersey|philadelphia|philly|boston|chicago|miami|los angeles|\bla\b|santa monica|malibu|beverly|san francisco|bay area|atlanta|nashville|austin|dallas|seattle|denver|new orleans|charleston|savannah|scottsdale|phoenix/i.test(l))
+    return { pts:9, detail:'Major US city — far but marketable' };
+  return { pts:4, detail:'Outside the DMV & major metros — far, less marketing pull' };
+}
 
 // Peak wedding season: May–October (months 4–9, 0-indexed)
 const PEAK_MONTHS = [4, 5, 6, 7, 8, 9]; // May–Oct
@@ -1556,7 +1644,8 @@ function getAvailabilityForDate(dateStr) {
 }
 
 function score(inq) {
-  const isWedding = /wedding|multi/i.test(inq.eventType);
+  const prefs = buildBookingPrefs();
+  const isWedding = /wedding|multi/i.test(inq.eventType||'');
   const myPrice = getMyPrice(inq);
   const budget = parseBudget(inq.budget);
   const miles = estimateMiles(inq.location);
@@ -1565,233 +1654,115 @@ function score(inq) {
   const travel = getTravelInfo(miles);
   const planner = inq.planner || '';
   const hasPlanner = /planner|coordinator|yes/i.test(planner) && !/no planner|don't have|not yet|considering/i.test(planner);
-  const noPlanner = /no planner|don't have|no,|not yet/i.test(planner) || planner.trim().length < 4;
-  const hasPhoto = /photographer|yes/i.test(inq.photoVideo||'');
-  const isReferral = /referral/i.test(inq.source||'');
+  const noPlanner = !hasPlanner && (/no planner|don't have|no,|not yet/i.test(planner) || planner.trim().length < 4);
   const loc = (inq.location||'').toLowerCase();
   const isLuxVenue = /hotel|hyatt|marriott|ritz|four seasons|hay-adams|mandarin|lotte|omni|hilton|sheraton|westin|waldorf|museum|gallery|estate|manor|vineyard|winery|rooftop|ballroom|club/i.test(loc);
+  const isPhotoFriendly = /garden|botanical|historic|waterfront|lakefront|mountain|barn|farmhouse|beachfront|ocean|cliff|terrace|conservatory|library|art deco|greenhouse/i.test(loc);
   const isBackyard = /backyard|back yard|house party|apartment|home|private residence/i.test(loc) && !/estate|manor/i.test(loc);
   const hasInstagram = !!(inq.instagram && inq.instagram.trim().length > 1);
-  const pkg = String(inq.package||'').toLowerCase();
-  const hasSpecificPackage = /just a little|happy medium|full.?on paparazzi/i.test(pkg);
-  const pkgHours = getPackageHours(inq);
+  const igHandle = (inq.instagram || '').trim().replace(/^@/,'');
+  const followerCount = parseInt(inq.followerCount || inq.followers || '0', 10) || 0;
 
-  // Day of week + month for peak/season analysis
+  // Day of week + month — kept only for the informational 🔥 peak tag (no longer scored)
   let dayOfWeek = -1, eventMonth = -1, isSaturday = false, isFriday = false, isSunday = false;
   if (inq.eventDate) {
     const d = new Date(normalizeDate(inq.eventDate) + 'T12:00:00');
-    if (!isNaN(d.getTime())) {
-      dayOfWeek = d.getDay();
-      eventMonth = d.getMonth();
-      isSaturday = dayOfWeek === 6;
-      isFriday = dayOfWeek === 5;
-      isSunday = dayOfWeek === 0;
-    }
+    if (!isNaN(d.getTime())) { dayOfWeek = d.getDay(); eventMonth = d.getMonth(); isSaturday = dayOfWeek===6; isFriday = dayOfWeek===5; isSunday = dayOfWeek===0; }
   }
 
-  // Repeat client / VIP planner detection
-  const plannerName = (inq.planner || '').toLowerCase().trim();
-  const clientName = (inq.name || '').toLowerCase().trim();
-  const clientEmail = (inq.email || '').toLowerCase().trim();
-  const sourceName = (inq.source || '').toLowerCase().trim();
-  const isVIPPlanner = VIP_PLANNERS.some(vp => plannerName.includes(vp) || sourceName.includes(vp));
-  // Check if client name or email has booked before
-  // Check historicalEvents (ITM_Financials) and booked events for repeat clients
-  const isRepeatClient = (DATA.historicalEvents || []).some(f => {
-    const fClient = (f.client || '').toLowerCase().trim();
-    return fClient && clientName && fClient.includes(clientName.split(/[&,]/)[0].trim());
-  }) || (DATA.events || []).some(e => {
-    const eClient = (e.client || '').toLowerCase().trim();
-    return eClient && (eClient === clientName || (clientEmail && (e.email||'').toLowerCase().trim() === clientEmail));
-  });
-  // Check if source/referral mentions a VIP planner
-  const isVIPReferral = !isVIPPlanner && VIP_PLANNERS.some(vp => sourceName.includes(vp));
+  // VIP — booking-derived (planner OR client name recurs 3+ in real bookings) or seed list
+  const plannerL = (inq.planner || '').toLowerCase().trim();
+  const clientL  = (inq.name || '').toLowerCase().trim();
+  const seedHit  = VIP_PLANNERS.some(vp => plannerL.includes(vp) || clientL.includes(vp));
+  const freqHit  = prefs.vip.has(plannerL) || prefs.vip.has(clientL);
+  const isVIP    = seedHit || freqHit;
+
+  // Preferred venue — booking-derived (worked here 3+) or keyword fallback
+  const venueNorm = loc.replace(/[^a-z0-9 ]/g,'').trim();
+  let isPreferredVenue = false;
+  prefs.venues.forEach(v => { if (v && venueNorm && (venueNorm.includes(v) || v.includes(venueNorm))) isPreferredVenue = true; });
 
   const criteria = [];
-  let total = 0;
+  let base = 0;
 
-  // ── 1. REPEAT CLIENT / VIP PLANNER (15pts) ──
-  let rcPts=0, rcColor='a', rcDetail='';
-  if(isVIPPlanner){rcPts=15;rcColor='g';rcDetail=`VIP planner detected — automatic yes if available`;}
-  else if(isRepeatClient){rcPts=15;rcColor='g';rcDetail=`Repeat client — has booked with you before`;}
-  else if(isVIPReferral){rcPts=10;rcColor='g';rcDetail=`Referred by a VIP planner — strong lead`;}
-  else if(isReferral){rcPts=5;rcColor='a';rcDetail='Referred but not by a known VIP planner';}
-  else{rcPts=0;rcColor='a';rcDetail='New client — no prior history';}
-  criteria.push({label:'Repeat Client / VIP Planner',pts:rcPts,max:15,color:rcColor,detail:rcDetail});
-  total+=rcPts;
+  // ══ BASE FUNDAMENTALS (max 80) ══
 
-  // ── 2. BUDGET VS PACKAGE (18pts) ──
-  let bPts=0, bColor='r', bDetail='';
-  if(budget===0){bPts=7;bColor='a';bDetail='Budget not specified — ask before sending pricing';}
-  else if(budget>=myPrice){bPts=18;bColor='g';bDetail=`$${budget.toLocaleString()} meets package price of $${myPrice.toLocaleString()}`;}
-  else if(budget>=myPrice*.85){bPts=13;bColor='a';bDetail=`$${budget.toLocaleString()} is slightly under $${myPrice.toLocaleString()} — could negotiate`;}
-  else if(budget>=myPrice*.65){bPts=6;bColor='r';bDetail=`$${budget.toLocaleString()} is well under $${myPrice.toLocaleString()}`;}
-  else{bPts=0;bColor='r';bDetail=`$${budget.toLocaleString()} is far below minimum of $${myPrice.toLocaleString()}`;}
-  criteria.push({label:'Budget vs. Package',pts:bPts,max:18,color:bColor,detail:bDetail});
-  total+=bPts;
+  // ── 1. BUDGET VS PACKAGE (24) ──
+  let bPts, bColor, bDetail;
+  if(budget===0){bPts=10;bColor='a';bDetail='Budget not specified — ask before sending pricing';}
+  else if(budget>=myPrice){bPts=24;bColor='g';bDetail=`$${budget.toLocaleString()} meets the $${myPrice.toLocaleString()} package price`;}
+  else if(budget>=myPrice*.85){bPts=16;bColor='a';bDetail=`$${budget.toLocaleString()} slightly under $${myPrice.toLocaleString()} — negotiable`;}
+  else if(budget>=myPrice*.65){bPts=8;bColor='r';bDetail=`$${budget.toLocaleString()} well under $${myPrice.toLocaleString()}`;}
+  else{bPts=0;bColor='r';bDetail=`$${budget.toLocaleString()} far below the $${myPrice.toLocaleString()} package`;}
+  criteria.push({label:'Budget vs. Package',pts:bPts,max:24,color:bColor,detail:bDetail});
+  base+=bPts;
 
-  // ── 3. DISTANCE-TO-PACKAGE RATIO (15pts) ──
-  // A 4hr package to Seattle (2800mi) = terrible ratio. Full package to NYC (235mi) = fine.
-  const milesPerHour = pkgHours > 0 ? miles / pkgHours : miles / 8;
-  const pricePerMile = myPrice > 0 && miles > 0 ? myPrice / miles : 999;
-  let dtPts=0, dtColor='r', dtDetail='';
-  if(miles < 15){
-    dtPts=15;dtColor='g';dtDetail=`Local (${miles}mi) — no travel concern regardless of package`;
-  } else if(miles < 50){
-    dtPts=13;dtColor='g';dtDetail=`Regional (${miles}mi) — easy trip for any package`;
-  } else if(milesPerHour <= 15){
-    // Under 15mi per package hour — good ratio (e.g. 150mi for 10hrs)
-    dtPts=12;dtColor='g';dtDetail=`${miles}mi ÷ ${pkgHours}hrs = ${Math.round(milesPerHour)}mi/hr — package justifies travel`;
-  } else if(milesPerHour <= 30){
-    dtPts=9;dtColor='a';dtDetail=`${miles}mi ÷ ${pkgHours}hrs = ${Math.round(milesPerHour)}mi/hr — moderate ratio, travel fee needed`;
-  } else if(milesPerHour <= 60){
-    dtPts=5;dtColor='a';dtDetail=`${miles}mi ÷ ${pkgHours}hrs = ${Math.round(milesPerHour)}mi/hr — long trip for this package`;
-  } else if(milesPerHour <= 120){
-    dtPts=2;dtColor='r';dtDetail=`${miles}mi ÷ ${pkgHours}hrs = ${Math.round(milesPerHour)}mi/hr — poor ratio, likely not worth it`;
-  } else {
-    dtPts=0;dtColor='r';dtDetail=`${miles}mi for a ${pkgHours}hr package — not viable`;
-  }
-  if(travel.feeMin>0) dtDetail+=` · suggest $${travel.feeMin}–$${travel.feeMax} travel fee`;
-  criteria.push({label:'Distance ÷ Package Value',pts:dtPts,max:15,color:dtColor,detail:dtDetail});
-  total+=dtPts;
+  // ── 2. LOCATION DESIRABILITY (18) — DC > VA > Intl > MD > major US > remote ──
+  const lt = locationTier(loc);
+  criteria.push({label:'Location (DC home base)',pts:lt.pts,max:18,color:lt.pts>=14?'g':lt.pts>=9?'a':'r',detail:lt.detail});
+  base+=lt.pts;
 
-  // ── 4. LOCATION QUALITY (10pts) ──
-  // Venue quality for content — distinct from distance
-  const isPhotoFriendly = /garden|botanical|historic|waterfront|lakefront|mountain|barn|farmhouse|beachfront|ocean|cliff|terrace|conservatory|library|art deco|greenhouse/i.test(loc);
-  let vPts=5, vColor='a', vDetail='Standard venue — neutral content potential';
-  if(isLuxVenue){vPts=10;vColor='g';vDetail='Luxury/distinctive venue — strong content potential';}
-  else if(isPhotoFriendly){vPts=8;vColor='g';vDetail='Photo-friendly venue — great visual backdrop';}
-  else if(isBackyard){vPts=2;vColor='r';vDetail='Casual/backyard setting — limited content value';}
-  else if(!loc||loc.length<3){vPts=3;vColor='a';vDetail='No venue specified — can\'t assess content potential';}
-  criteria.push({label:'Location Quality',pts:vPts,max:10,color:vColor,detail:vDetail});
-  total+=vPts;
-
-  // ── 5. INSTAGRAM / FOLLOWER COUNT (10pts) ──
-  // If high follower count → marketing value even if package is smaller
-  const igHandle = (inq.instagram || '').trim().replace(/^@/,'');
-  const followerCount = parseInt(inq.followerCount || inq.followers || '0', 10) || 0;
-  let iPts=0, iColor='a', iDetail='';
-  if(followerCount >= 100000){
-    iPts=10;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — Top-Tier Influencer ⚡ MUST RESPOND`;
-  } else if(followerCount >= 50000){
-    iPts=9;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — Mid-Tier Influencer ⚡ MUST RESPOND`;
-  } else if(followerCount >= 30000){
-    iPts=7;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K followers — High Reach — strong marketing value`;
-  } else if(followerCount >= 10000){
-    iPts=5;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(1)}K followers — Solid Following — good marketing potential`;
-  } else if(hasInstagram && followerCount > 0){
-    iPts=3;iColor='a';iDetail=`@${igHandle} — ${followerCount >= 1000 ? (followerCount/1000).toFixed(1)+'K' : followerCount} followers — Standard`;
-  } else if(hasInstagram){
-    iPts=3;iColor='a';iDetail=`@${igHandle} — follower count unknown (check their page)`;
-  } else {
-    iPts=0;iColor='a';iDetail='No Instagram provided — can\'t assess marketing value';
-  }
-  criteria.push({label:'Instagram / Marketing Value',pts:iPts,max:10,color:iColor,detail:iDetail});
-  total+=iPts;
-
-  // ── 6. PEAK DAY / SEASON (10pts) ──
-  // Saturday in peak season = hold for higher-value inquiry if package is small
-  let peakPts=5, peakColor='a', peakDetail='';
-  if(eventMonth < 0){
-    peakPts=3;peakColor='a';peakDetail='No date — can\'t assess peak/season';
-  } else {
-    const isPeakMonth = PEAK_MONTHS.includes(eventMonth);
-    const isShoulderMonth = SHOULDER_MONTHS.includes(eventMonth);
-    const monthName = new Date(2026, eventMonth, 1).toLocaleDateString('en-US',{month:'long'});
-    const dayName = inq.eventDate ? new Date(normalizeDate(inq.eventDate)+'T12:00:00').toLocaleDateString('en-US',{weekday:'long'}) : '';
-
-    if(isSaturday && isPeakMonth){
-      // Prime slot — only book for high-value packages
-      if(myPrice >= 2600){
-        peakPts=10;peakColor='g';peakDetail=`${dayName} in ${monthName} — prime slot AND premium package`;
-      } else {
-        peakPts=4;peakColor='r';peakDetail=`${dayName} in ${monthName} — prime slot but entry package. Consider holding for bigger inquiry`;
-      }
-    } else if(isSaturday && isShoulderMonth){
-      peakPts=8;peakColor='g';peakDetail=`${dayName} in ${monthName} — shoulder season Saturday, good to book`;
-    } else if(isSaturday){
-      peakPts=7;peakColor='a';peakDetail=`${dayName} in ${monthName} — off-season Saturday, lower demand`;
-    } else if((isFriday||isSunday) && isPeakMonth){
-      peakPts=7;peakColor='a';peakDetail=`${dayName} in ${monthName} — peak season weekend day`;
-    } else if(isFriday||isSunday){
-      peakPts=6;peakColor='a';peakDetail=`${dayName} in ${monthName} — weekend but not peak`;
-    } else if(isPeakMonth){
-      peakPts=5;peakColor='a';peakDetail=`${dayName} in ${monthName} — weekday in peak season`;
-    } else {
-      peakPts=3;peakColor='a';peakDetail=`${dayName} in ${monthName} — off-peak weekday, low demand`;
-    }
-  }
-  criteria.push({label:'Peak Day / Season',pts:peakPts,max:10,color:peakColor,detail:peakDetail});
-  total+=peakPts;
-
-  // ── 7. WEDDING PLANNER (12pts weddings, 5pts others) ──
-  const pMax = isWedding ? 12 : 5;
-  let pPts=0, pColor='r', pDetail='';
-  if(hasPlanner){pPts=pMax;pColor='g';pDetail='Has a dedicated planner — ✓';}
-  else if(noPlanner&&isWedding){pPts=0;pColor='r';pDetail='⛔ No planner — hard rule: you do not book weddings without one';}
-  else if(noPlanner){pPts=Math.round(pMax*.75);pColor='a';pDetail='No planner — acceptable for this event type';}
-  else{pPts=Math.round(pMax*.5);pColor='a';pDetail='Unclear if they have a planner — needs follow-up';}
-  criteria.push({label:'Wedding Planner',pts:pPts,max:pMax,color:pColor,detail:pDetail});
-  total+=pPts;
-
-  // ── 8. DATE / LEAD TIME / AVAILABILITY (10pts) ──
-  let dPts=0, dColor='a', dDetail='';
-  if(months===null){dPts=3;dColor='a';dDetail='No date provided';}
-  else if(months<0){dPts=0;dColor='r';dDetail='Date has already passed';}
-  else if(months<1){dPts=1;dColor='r';dDetail=`${Math.round(months*4)} weeks out — very last minute`;}
-  else if(months<2){dPts=4;dColor='a';dDetail=`${Math.round(months)} month out — tight lead time`;}
-  else if(months<=12){dPts=10;dColor='g';dDetail=`${Math.round(months)} months out — ideal booking window`;}
-  else if(months<=18){dPts=7;dColor='a';dDetail=`${Math.round(months)} months out — early but workable`;}
-  else{dPts=3;dColor='r';dDetail=`${Math.round(months)} months out — very far out, may go cold`;}
-
+  // ── 3. TEAM AVAILABILITY (16) — lead time dropped; only availability matters ──
+  let aPts=9, aColor='a', aDetail='Availability unknown for this date';
   if(avail){
     if(avail.laurenBooked){
-      dPts=0;dColor='r';
+      aPts=0;aColor='r';
       const calEvent = DATA.bookedDates.find(b=>normalizeDate(b.date)===normalizeDate(inq.eventDate));
-      dDetail=`⛔ You are already booked (${calEvent?.label||'calendar event'})`;
+      aDetail=`⛔ You are already booked (${calEvent?.label||'calendar event'})`;
     } else if(avail.severity==='conflict'){
-      dPts=Math.max(0,dPts-3);dColor='r';
-      dDetail+=` · ⚡ ${avail.verdict}`;
+      aPts=4;aColor='r';aDetail=`⚡ ${avail.verdict}`;
     } else if(avail.severity==='unknown' && DATA.availability.length>0){
-      dColor='a';
-      dDetail+=` · ⚠️ ${avail.unknownContractors.length} team member(s) haven't submitted availability`;
-    } else if(avail.freeContractors.length>0){
-      dDetail+=` · ✓ ${avail.freeContractors.map(c=>c.name.split(' ')[0]).join(', ')} free`;
+      aPts=9;aColor='a';aDetail=`⚠️ ${avail.unknownContractors.length} team member(s) haven't submitted availability`;
+    } else if(avail.freeContractors && avail.freeContractors.length>0){
+      aPts=16;aColor='g';aDetail=`✓ Free: ${avail.freeContractors.map(c=>c.name.split(' ')[0]).join(', ')}`;
+    } else {
+      aPts=12;aColor='g';aDetail='No conflicts found for this date';
     }
-    if(!DATA.availability.length && !DATA.bookedDates.length){
-      dDetail+=' · (Connect calendar + availability sheet to see real team data)';
-    }
+    if(!DATA.availability.length && !DATA.bookedDates.length){ aDetail+=' · (connect calendar + availability for real team data)'; }
   }
-  criteria.push({label:'Date / Lead Time / Availability',pts:dPts,max:10,color:dColor,detail:dDetail});
-  total+=dPts;
+  criteria.push({label:'Team Availability',pts:aPts,max:16,color:aColor,detail:aDetail});
+  base+=aPts;
 
-  // ── 9. PACKAGE CLARITY (3pts) ──
-  let pkgPts=hasSpecificPackage?3:1, pkgColor=hasSpecificPackage?'g':'a';
-  criteria.push({label:'Package Clarity',pts:pkgPts,max:3,color:pkgColor,detail:hasSpecificPackage?`Selected ${inq.package} — knows what they want`:'No specific package selected — still exploring'});
-  total+=pkgPts;
+  // ── 4. VENUE (12) — preferred = booked here before; else keyword content quality ──
+  let vPts, vColor, vDetail;
+  if(isPreferredVenue){vPts=12;vColor='g';vDetail='Preferred venue — she\'s booked here 3+ times';}
+  else if(isLuxVenue){vPts=9;vColor='g';vDetail='Luxury/distinctive venue — strong content';}
+  else if(isPhotoFriendly){vPts=7;vColor='g';vDetail='Photo-friendly venue — good backdrop';}
+  else if(isBackyard){vPts=2;vColor='r';vDetail='Casual/backyard — limited content value';}
+  else if(!loc||loc.length<3){vPts=4;vColor='a';vDetail='No venue specified';}
+  else{vPts=5;vColor='a';vDetail='Standard venue';}
+  criteria.push({label:'Venue',pts:vPts,max:12,color:vColor,detail:vDetail});
+  base+=vPts;
 
-  // ── 10. SOURCE (3pts) ──
-  let sPts=1, sColor='a';
-  if(isReferral){sPts=3;sColor='g';}else if(/email|direct/i.test(inq.source||'')){sPts=3;sColor='g';}else if(/instagram|social/i.test(inq.source||'')){sPts=2;sColor='a';}
-  criteria.push({label:'Inquiry Source',pts:sPts,max:3,color:sColor,detail:isReferral?'Referral — pre-sold':/email|direct/i.test(inq.source||'')?'Direct/email inquiry':'Standard inquiry source'});
-  total+=sPts;
+  // ── 5. VIP / RELATIONSHIP (10) — booking-derived planner/client + seed list ──
+  let rcPts=0, rcColor='a', rcDetail='New name — not in your booked-with list yet';
+  if(isVIP){ rcPts=10; rcColor='g'; rcDetail = seedHit ? 'On your VIP list — auto-book if available' : 'VIP — you\'ve booked with this planner/client 3+ times'; }
+  criteria.push({label:'VIP / Relationship',pts:rcPts,max:10,color:rcColor,detail:rcDetail});
+  base+=rcPts;
 
-  // ── 11. PHOTOGRAPHER (2pts) ──
-  let phPts=hasPhoto?2:1, phColor=hasPhoto?'g':'a';
-  criteria.push({label:'Photographer',pts:phPts,max:2,color:phColor,detail:hasPhoto?'Has photographer — event is invested':'No photographer confirmed yet'});
-  total+=phPts;
+  // ══ MARKETING BOOST (+0…24, added on top — Lauren's #1 priority) ══
+  let iPts=0, iColor='a', iDetail='';
+  if(followerCount >= 100000){ iPts=24;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K — Top-Tier Influencer ⚡ MUST RESPOND`; }
+  else if(followerCount >= 50000){ iPts=20;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K — Mid-Tier Influencer ⚡ MUST RESPOND`; }
+  else if(followerCount >= 30000){ iPts=14;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(0)}K — High Reach`; }
+  else if(followerCount >= 10000){ iPts=8;iColor='g';iDetail=`@${igHandle} — ${(followerCount/1000).toFixed(1)}K — Solid Following`; }
+  else if(hasInstagram && followerCount > 0){ iPts=3;iColor='a';iDetail=`@${igHandle} — ${followerCount>=1000?(followerCount/1000).toFixed(1)+'K':followerCount} — Standard`; }
+  else if(hasInstagram){ iPts=3;iColor='a';iDetail=`@${igHandle} — follower count unknown`; }
+  else { iPts=0;iColor='a';iDetail='No Instagram — can\'t assess marketing value'; }
+  criteria.push({label:'Marketing / Reach (boost)',pts:iPts,max:24,color:iColor,detail:iDetail});
 
-  // Hard fails
+  const total = Math.min(100, base + iPts);
+
+  // Hard fails — no-planner wedding auto-declines UNLESS a major influencer (≥50K)
   const hardFails = [];
-  if(isWedding&&noPlanner)       hardFails.push('No planner — auto-decline for weddings');
-  if(budget>0&&budget<myPrice*.5) hardFails.push(`Budget ($${budget.toLocaleString()}) is less than half your minimum`);
-  if(months!==null&&months<0)    hardFails.push('Event date has passed');
-  if(avail?.laurenBooked)        hardFails.push('You are already booked on this date (Google Calendar)');
+  if(isWedding && noPlanner && followerCount < FOLLOWER_NOPLANNER_OVERRIDE) hardFails.push('No planner — auto-decline for weddings (not a major influencer)');
+  if(budget>0 && budget<myPrice*.5) hardFails.push(`Budget ($${budget.toLocaleString()}) is less than half the $${myPrice.toLocaleString()} package`);
+  if(months!==null && months<0)     hardFails.push('Event date has passed');
+  if(avail?.laurenBooked)           hardFails.push('You are already booked on this date (Google Calendar)');
 
-  // VIP override — even if score is low, flag VIP planner as auto-book
-  inq._isVIP     = isVIPPlanner || isRepeatClient;
+  inq._isVIP     = isVIP;            // VIP → auto-book verdict (unless hard fail)
   inq._scored    = true;
-  inq._score     = Math.min(100, total);
+  inq._score     = total;
   inq._stars     = scoreToStars(total);
   inq._criteria  = criteria;
   inq._travel    = travel;
@@ -1800,20 +1771,20 @@ function score(inq) {
   inq._miles     = miles;
   inq._hardFails = hardFails;
   inq._months    = months;
-  inq._conflict  = avail?.severity==='conflict' || avail?.laurenBooked || false;
+  inq._conflict  = (avail && (avail.severity==='conflict' || avail.laurenBooked)) || false;
   inq._avail     = avail;
   inq._noPlanner = isWedding && noPlanner;
-  inq._isVIPPlanner  = isVIPPlanner;
-  inq._isRepeatClient = isRepeatClient;
-  inq._followerCount = followerCount;
+  inq._isVIPPlanner   = isVIP;       // kept for the 👑 card tag
+  inq._isRepeatClient = false;       // folded into VIP now
+  inq._followerCount  = followerCount;
   inq._peakInfo = { isSaturday, isFriday, isSunday, isPeakMonth: PEAK_MONTHS.includes(eventMonth), dayOfWeek, eventMonth };
 }
 
 function scoreToStars(pts) {
-  if (pts >= 80) return 5;
-  if (pts >= 65) return 4;
-  if (pts >= 50) return 3;
-  if (pts >= 30) return 2;
+  if (pts >= 78) return 5;   // Book This — marketing pull or VIP/preferred on top of fundamentals
+  if (pts >= 56) return 4;   // Strong Lead — solid full-fit event (recommended); full-pay local wedding lands here
+  if (pts >= 42) return 3;   // Ask Questions
+  if (pts >= 26) return 2;   // Low Priority
   return 1;
 }
 
@@ -1892,9 +1863,13 @@ function renderAll() {
   renderFinancials();
   renderEvents();
   if (document.getElementById('page-deliverables').classList.contains('active')) renderDeliverables();
-  // Notification dot
+  if (document.getElementById('page-inquiries').classList.contains('active')) {
+    if (inqView==='planner') renderPlanner();
+    else if (inqView==='prospective') renderProspective();
+  }
+  // Notification dot — lit for stale new inquiries OR follow-ups due
   const urgent = DATA.inquiries.filter(i => i.stage==='new' && hoursOld(i.timestamp) > 4);
-  document.getElementById('inq-dot').style.display = urgent.length ? 'inline-block' : 'none';
+  document.getElementById('inq-dot').style.display = (urgent.length || followUpsDue().length) ? 'inline-block' : 'none';
 }
 
 function hoursOld(ts) {
@@ -2168,6 +2143,87 @@ function _renderDashboard() {
   `;
 }
 
+// ════════════════════════════════ FOLLOW-UP CADENCE ════════════════════════════════
+// Keeps warm leads from going cold. Stores nextFollowUp (date) + followUpCount (int)
+// on the Inquiry Responses row (written by _rowIndex like updateInquiryStage). Only
+// active leads (contacted / proposal) get nudged. MUST-RESPOND influencers / VIP get a
+// tighter cadence. Gaps are *days from now* applied each time a touch is logged.
+const FOLLOWUP_GAPS = {
+  standard: [3, 4, 7, 16],   // touches land on ~day 3, 7, 14, 30 from first contact
+  priority: [1, 2, 4, 7],    // 50K+ influencers / VIP — chased sooner (~day 1, 3, 7, 14)
+};
+
+function isPriorityLead(inq){ return (inq._followerCount||0) >= 50000 || !!inq._isVIP; }
+function followupGaps(inq){ return isPriorityLead(inq) ? FOLLOWUP_GAPS.priority : FOLLOWUP_GAPS.standard; }
+function fuCount(inq){ return parseInt(inq.followUpCount)||0; }
+function fuAddDays(n){ const d = new Date(); d.setDate(d.getDate()+n); return d.toISOString().split('T')[0]; }
+function fmtShort(ds){ const nd = normalizeDate(ds); if(!nd) return '—'; const d = new Date(nd+'T12:00:00'); return isNaN(d.getTime())?nd:d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+
+function followUpDue(inq){
+  if(!inq || !inq.nextFollowUp) return false;
+  if(!['contacted','proposal'].includes(inq.stage)) return false;
+  return (normalizeDate(inq.nextFollowUp)||'') <= new Date().toISOString().split('T')[0];
+}
+function followUpsDue(){ return (DATA.inquiries||[]).filter(followUpDue).sort((a,b)=>(b._score||0)-(a._score||0)); }
+function fuDueLabel(inq){
+  const nd = normalizeDate(inq.nextFollowUp); if(!nd) return '';
+  const todayStr = new Date().toISOString().split('T')[0];
+  if(nd < todayStr) return '<span style="color:var(--red);font-weight:600">(overdue)</span>';
+  if(nd === todayStr) return '<span style="color:var(--amber);font-weight:600">(due today)</span>';
+  const days = Math.round((new Date(nd+'T12:00:00') - new Date(todayStr+'T12:00:00'))/86400000);
+  return `<span style="color:var(--muted)">(in ${days}d)</span>`;
+}
+
+async function saveFollowUp(inq){
+  if(!inq._rowIndex) return;
+  try { await apiCall('updateInquiryFollowup', { rowIndex: inq._rowIndex, nextFollowUp: inq.nextFollowUp||'', followUpCount: fuCount(inq) }); }
+  catch(e){ toast('⚠ Could not save follow-up'); }
+}
+
+// Schedule the first touch when a lead becomes 'contacted' (no-op if already scheduled)
+function startFollowUp(inq){
+  if(inq.nextFollowUp) return;
+  if(fuCount(inq) >= followupGaps(inq).length) return; // cycle already finished
+  inq.followUpCount = inq.followUpCount || 0;
+  inq.nextFollowUp = fuAddDays(followupGaps(inq)[0]);
+  saveFollowUp(inq);
+}
+function restartFollowUp(id){
+  const inq = DATA.inquiries.find(i=>i.id===id); if(!inq) return;
+  const gaps = followupGaps(inq);
+  inq.nextFollowUp = fuAddDays(gaps[Math.min(fuCount(inq), gaps.length-1)]);
+  saveFollowUp(inq);
+  renderAll(); if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);
+}
+
+async function doFollowUp(id){
+  const inq = DATA.inquiries.find(i=>i.id===id); if(!inq) return;
+  const gaps = followupGaps(inq);
+  inq.followUpCount = fuCount(inq) + 1;
+  inq.nextFollowUp = (inq.followUpCount < gaps.length) ? fuAddDays(gaps[inq.followUpCount]) : '';
+  await saveFollowUp(inq);
+  renderAll(); if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);
+  toast(inq.nextFollowUp ? `✓ Follow-up logged — next on ${fmtShort(inq.nextFollowUp)}` : '✓ Follow-up cycle complete');
+}
+async function snoozeFollowUp(id, days){
+  const inq = DATA.inquiries.find(i=>i.id===id); if(!inq) return;
+  inq.nextFollowUp = fuAddDays(days); await saveFollowUp(inq);
+  renderAll(); if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);
+  toast(`Snoozed to ${fmtShort(inq.nextFollowUp)}`);
+}
+async function snoozeFollowUpDate(id, val){
+  const inq = DATA.inquiries.find(i=>i.id===id); if(!inq || !val) return;
+  inq.nextFollowUp = normalizeDate(val) || val; await saveFollowUp(inq);
+  renderAll(); if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);
+  toast(`Next touch ${fmtShort(inq.nextFollowUp)}`);
+}
+async function stopFollowUp(id){
+  const inq = DATA.inquiries.find(i=>i.id===id); if(!inq) return;
+  inq.nextFollowUp = ''; await saveFollowUp(inq);
+  renderAll(); if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);
+  toast('Stopped following up');
+}
+
 // ════════════════════════════════ INQUIRIES ════════════════════════════════
 
 // Auto-archive inquiries whose event date has passed
@@ -2183,14 +2239,35 @@ function autoArchivePastInquiries() {
 
 let inqTab = 'needs'; // 'needs' | 'active' | 'archived' | 'all'
 
+// ── Inquiries tab now hosts three views: the inquiry list, the Planner, the Prospective calculator ──
+let inqView = 'list'; // 'list' | 'planner' | 'prospective'
+const INQ_VIEWS = [['list','📋 Inquiries'],['planner','📅 Planner'],['prospective','🧮 Prospective']];
+function renderInqSwitcher(){
+  const el = document.getElementById('inq-view-switcher');
+  if(!el) return;
+  el.innerHTML = INQ_VIEWS.map(([v,label])=>`<button class="btn ${inqView===v?'btn-gold':'btn-outline'}" onclick="setInqView('${v}')" style="padding:7px 16px;font-size:13px">${label}</button>`).join('');
+}
+function setInqView(v){
+  inqView = v;
+  document.getElementById('inq-content').style.display      = v==='list' ? '' : 'none';
+  document.getElementById('planner-content').style.display    = v==='planner' ? '' : 'none';
+  document.getElementById('prospective-content').style.display = v==='prospective' ? '' : 'none';
+  renderInqSwitcher();
+  if(v==='list') renderInquiries();
+  else if(v==='planner') renderPlanner();
+  else if(v==='prospective') renderProspective();
+}
+
 function renderInquiries() {
   const needs    = DATA.inquiries.filter(i => i.stage === 'new');
   const active   = DATA.inquiries.filter(i => ['contacted','proposal','booked'].includes(i.stage));
   const archived = DATA.inquiries.filter(i => ['archived','declined'].includes(i.stage));
+  const dueFu    = followUpsDue();
 
-  const showList = inqTab === 'needs'    ? needs
-                 : inqTab === 'active'   ? active
-                 : inqTab === 'archived' ? archived
+  const showList = inqTab === 'needs'     ? needs
+                 : inqTab === 'followups' ? dueFu
+                 : inqTab === 'active'    ? active
+                 : inqTab === 'archived'  ? archived
                  : DATA.inquiries;
 
   const sorted = [...showList].sort((a,b) => {
@@ -2209,6 +2286,9 @@ function renderInquiries() {
       <button class="btn ${inqTab==='needs'?'btn-gold':'btn-outline'}" onclick="inqTab='needs';renderInquiries()" style="padding:6px 14px;font-size:11px">
         Needs Response ${needs.length>0?`<span style="background:var(--red);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px">${needs.length}</span>`:''}
       </button>
+      <button class="btn ${inqTab==='followups'?'btn-gold':'btn-outline'}" onclick="inqTab='followups';renderInquiries()" style="padding:6px 14px;font-size:11px">
+        🔔 Follow-ups Due ${dueFu.length>0?`<span style="background:var(--amber);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px">${dueFu.length}</span>`:''}
+      </button>
       <button class="btn ${inqTab==='active'?'btn-gold':'btn-outline'}" onclick="inqTab='active';renderInquiries()" style="padding:6px 14px;font-size:11px">
         Active <span style="opacity:0.7">(${active.length})</span>
       </button>
@@ -2221,6 +2301,8 @@ function renderInquiries() {
     </div>
     ${inqTab==='needs' && needs.length===0 ? `
       <div class="empty"><div class="empty-icon">✓</div><div class="empty-msg">All caught up — no inquiries need a response.</div></div>
+    ` : inqTab==='followups' && dueFu.length===0 ? `
+      <div class="empty"><div class="empty-icon">🔔</div><div class="empty-msg">No follow-ups due — every warm lead is on schedule.</div></div>
     ` : `
     <div class="inquiry-list">
       ${sorted.length ? sorted.map(i=>inqCard(i,true)).join('') : `<div class="empty"><div class="empty-icon">📩</div><div class="empty-msg">Nothing here.</div></div>`}
@@ -2241,6 +2323,7 @@ function markResponded(id, e) {
         console.warn('Could not persist stage to sheet:', e2);
       });
     }
+    startFollowUp(inq);   // schedule the first follow-up touch
     renderInquiries(); renderDashboard();
     toast('✓ Marked as responded');
   }
@@ -2259,6 +2342,7 @@ function inqCard(inq, clickable=true) {
   if(inq._noPlanner) tags.push('<span class="tag tag-noplan">⛔ No Planner</span>');
   if(inq._travel?.feeMin>0) tags.push(`<span class="tag tag-travel">✈️ $${inq._travel.feeMin}–$${inq._travel.feeMax} travel fee</span>`);
   if(inq.stage==='new') tags.push('<span class="tag tag-new">New</span>');
+  if(followUpDue(inq)) tags.push(`<span class="tag tag-travel" style="background:rgba(154,92,10,0.12);color:var(--amber);font-weight:600">🔔 Follow up due ${(normalizeDate(inq.nextFollowUp)||'')<new Date().toISOString().split('T')[0]?'· overdue':'today'}</span>`);
   if(inq._followerCount>=50000) tags.push(`<span class="tag tag-ok" style="background:rgba(139,26,26,0.12);color:var(--gold);font-weight:600">⚡ ${(inq._followerCount/1000).toFixed(0)}K — MUST RESPOND</span>`);
   else if(inq._followerCount>=30000) tags.push(`<span class="tag tag-ok">📸 ${(inq._followerCount/1000).toFixed(0)}K — High Reach</span>`);
   else if(inq._followerCount>=10000) tags.push(`<span class="tag tag-ok">📸 ${(inq._followerCount/1000).toFixed(0)}K followers</span>`);
@@ -2436,6 +2520,40 @@ function openDetail(id) {
       `).join('')}
     </div>
 
+    ${(function(){
+      const nd = normalizeDate(inq.eventDate);
+      const future = nd && nd >= new Date().toISOString().split('T')[0];
+      const plannable = future && !['booked','declined','archived'].includes(inq.stage);
+      if(!plannable) return '';
+      const penc = isPenciled(inq), passed = isPassed(inq);
+      return `
+    <div class="sec-label" style="margin-bottom:8px">Year Planner</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <button class="btn ${penc?'btn-gold':'btn-outline'}" style="font-size:11px" onclick="pencilIn('${inq.id}')">${penc?'✓ Penciled in':'✏ Pencil in'}</button>
+      <button class="btn btn-outline" style="font-size:11px${passed?';border-color:var(--red);color:var(--red)':''}" onclick="passInq('${inq.id}')">${passed?'✗ Passed':'Pass'}</button>
+      <span style="font-size:11px;color:var(--muted)">${penc?'Counted in your projected revenue ('+planMoney(planPrice(inq))+')':'Add to your year plan & revenue projection'}</span>
+    </div>`;
+    })()}
+
+    ${['contacted','proposal'].includes(inq.stage) ? `
+    <div class="sec-label" style="margin-bottom:8px">Follow-up</div>
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:14px">
+      ${inq.nextFollowUp ? `
+        <div style="font-size:13px;margin-bottom:9px">Next touch: <b>${fmtShort(inq.nextFollowUp)}</b> ${fuDueLabel(inq)} · touch ${fuCount(inq)+1} of ${followupGaps(inq).length}${isPriorityLead(inq)?' · <span style="color:var(--gold)">⚡ priority cadence</span>':''}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-gold" style="font-size:11px" onclick="doFollowUp('${inq.id}')">✓ Followed up</button>
+          <button class="btn btn-outline" style="font-size:11px" onclick="snoozeFollowUp('${inq.id}',3)">Snooze 3d</button>
+          <button class="btn btn-outline" style="font-size:11px" onclick="snoozeFollowUp('${inq.id}',7)">Snooze 1w</button>
+          <input type="date" value="${normalizeDate(inq.nextFollowUp)||''}" onchange="snoozeFollowUpDate('${inq.id}',this.value)" style="font-size:11px;padding:4px 6px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">
+          <button class="btn btn-outline" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="stopFollowUp('${inq.id}')">Stop</button>
+        </div>
+      ` : `
+        <div style="font-size:13px;color:var(--muted);margin-bottom:9px">No follow-up scheduled${fuCount(inq)>=followupGaps(inq).length?' — cadence complete':''}.</div>
+        <button class="btn btn-outline" style="font-size:11px" onclick="restartFollowUp('${inq.id}')">+ Schedule follow-up</button>
+      `}
+    </div>
+    ` : ''}
+
     <div class="sec-label" style="margin-bottom:8px">Response Email Draft</div>
     <div id="email-draft-area-${inq.id}">
       <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
@@ -2553,6 +2671,9 @@ function setStage(id, stage) {
         console.warn('Could not persist stage to sheet:', e);
       });
     }
+    // Follow-up cadence: start when entering contacted, stop when the lead resolves
+    if (stage === 'contacted') startFollowUp(inq);
+    else if (['booked','declined','archived'].includes(stage) && inq.nextFollowUp) { inq.nextFollowUp = ''; saveFollowUp(inq); }
     renderAll(); openDetail(id);
   }
 }
@@ -5964,6 +6085,479 @@ function addBookedDate() {
 }
 function removeBookedDate(i) { DATA.bookedDates.splice(i,1); saveCfg(); DATA.inquiries.forEach(x=>score(x)); renderSettings(); renderAll(); }
 
+// ════════════════════════════════ PROSPECTIVE PLANNER ════════════════════════════════
+// A dedicated year-planning surface (📅 Planner) + standalone revenue calculator
+// (🧮 Prospective), both built on the existing score() output. "Pencil in" is a
+// planning reservation stored as planStatus on the Inquiry Responses row — separate
+// from actually booking the inquiry. Written by _rowIndex like updateInquiryStage.
+
+let plannerView    = 'calendar';                // 'calendar' | 'year'
+let plannerMonth   = new Date().getMonth();
+let plannerYear    = new Date().getFullYear();
+let plannerOpenDay = null;                       // ds of the expanded matchup day
+let plannerRecView = 'rec';                      // monthly list: 'rec' | 'all'
+let plannerRecSort = 'fit';                      // 'fit' | 'money' | 'date' | 'reach'
+
+function planMoney(n){ return '$' + Math.round(n||0).toLocaleString(); }
+function planMoneyK(n){ return '$' + (Math.round((n||0)/100)/10) + 'k'; }
+function planPrice(inq){ return (inq && (inq._myPrice || getMyPrice(inq))) || 2400; }
+function inqYear(inq){ const nd = normalizeDate(inq.eventDate); return nd ? nd.slice(0,4) : ''; }
+function isPenciled(inq){ return !!inq && inq.planStatus === 'penciled'; }
+function isPassed(inq){ return !!inq && inq.planStatus === 'passed'; }
+
+// A recommended, takeable inquiry on a future open date (or one already penciled).
+function isCandidate(inq){
+  if(!inq) return false;
+  if(['archived','declined','booked'].includes(inq.stage)) return false;
+  if(isPassed(inq)) return false;
+  const nd = normalizeDate(inq.eventDate);
+  if(!nd || nd < new Date().toISOString().split('T')[0]) return false;
+  if(isPenciled(inq)) return true;
+  if(inq._hardFails && inq._hardFails.length) return false;
+  return (inq._stars||0) >= 4 || inq._isVIP;
+}
+
+function plannerCandidates(year){ return (DATA.inquiries||[]).filter(i => isCandidate(i) && (!year || inqYear(i)==String(year))); }
+function plannerPenciled(year){ return (DATA.inquiries||[]).filter(i => isPenciled(i) && (!year || inqYear(i)==String(year))); }
+
+function bookedRevenue(year){
+  return getMergedEvents().reduce((s,e)=>{
+    const d = (e.date||e.eventDate||'');
+    return (d.slice(0,4)==String(year)) ? s + (e.contractValue||e.grossAmount||0) : s;
+  },0);
+}
+
+function prospectiveTotals(year){
+  const booked = bookedRevenue(year);
+  const penc   = plannerPenciled(year).reduce((s,i)=>s+planPrice(i),0);
+  const open   = plannerCandidates(year).filter(i=>!isPenciled(i)).reduce((s,i)=>s+planPrice(i),0);
+  const goal   = +CFG.revenueGoal || 150000;
+  return { booked, penc, open, projected: booked+penc, goal, gap: goal-(booked+penc) };
+}
+
+// Chip / star color by recommendation strength
+function planChipClass(inq){
+  if(isPenciled(inq))                              return { bg:'var(--goldbg)',   bd:'var(--gold)',        fg:'var(--gold)'  };
+  if(inq._hardFails && inq._hardFails.length)      return { bg:'var(--redbg)',    bd:'var(--redborder)',   fg:'var(--red)'   };
+  if((inq._stars||0) >= 4)                         return { bg:'var(--greenbg)',  bd:'var(--greenborder)', fg:'var(--green)' };
+  if((inq._stars||0) >= 3)                         return { bg:'var(--amberbg)',  bd:'var(--amberborder)', fg:'var(--amber)' };
+  return { bg:'var(--s2)', bd:'var(--border)', fg:'var(--muted)' };
+}
+
+async function setPlan(id, status){
+  const inq = (DATA.inquiries||[]).find(i=>i.id===id);
+  if(!inq) return;
+  inq.planStatus = (inq.planStatus===status) ? '' : status;   // toggle off if already set
+  renderPlanner(); renderProspective();
+  if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);  // refresh panel if open
+  if(inq._rowIndex){
+    try { await apiCall('updateInquiryPlan', { rowIndex: inq._rowIndex, planStatus: inq.planStatus }); }
+    catch(e){ toast('⚠ Could not save plan status'); }
+  }
+}
+function pencilIn(id){ setPlan(id,'penciled'); }
+function passInq(id){ setPlan(id,'passed'); }
+function setGoal(v){ CFG.revenueGoal = Math.max(0, parseInt(String(v).replace(/[^0-9]/g,''))||0); saveCfg(); renderProspective(); renderPlanner(); }
+
+// Phase 2 — push the standalone "Year Planner" Google Sheet (server-side mirror for Lauren)
+async function buildProspectiveSheet(){
+  toast('Building Year Planner sheet…');
+  try {
+    const r = await apiCall('generateProspectiveSheet', {});
+    toast(`✓ Year Planner sheet built — ${r&&r.candidates!=null?r.candidates:'?'} candidates`);
+  } catch(e){ toast('⚠ Could not build sheet: '+(e.message||e)); }
+}
+
+function plannerPreset(p){
+  plannerCandidates(plannerYear).forEach(inq=>{
+    let want = isPenciled(inq);
+    if(p==='all')        want = true;
+    else if(p==='clear') want = false;
+    else if(p==='five')  want = (inq._stars||0) >= 5;
+    else if(p==='local') want = (inq._miles!=null && inq._miles < 50);
+    if(want !== isPenciled(inq)){
+      inq.planStatus = want ? 'penciled' : '';
+      if(inq._rowIndex) apiCall('updateInquiryPlan',{rowIndex:inq._rowIndex, planStatus:inq.planStatus}).catch(()=>{});
+    }
+  });
+  renderProspective(); renderPlanner();
+}
+
+// ── Shared projection bar (top of Planner) ──
+function plannerSummaryBar(t){
+  const scale = Math.max(t.goal, t.projected)*1.08 || 1;
+  return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div><div style="font-size:11px;color:var(--muted)">Projected ${plannerYear}</div><div style="font-size:22px;font-weight:700;line-height:1.1">${planMoney(t.projected)}</div></div>
+    <div style="flex:1;min-width:170px">
+      <div style="height:18px;border-radius:6px;background:var(--s2);display:flex;overflow:hidden;position:relative">
+        <div style="width:${t.booked/scale*100}%;background:var(--green);opacity:.85"></div>
+        <div style="width:${t.penc/scale*100}%;background:rgba(139,26,26,0.18);border-left:2px solid var(--gold)"></div>
+        <div style="position:absolute;top:-2px;bottom:-2px;left:${t.goal/scale*100}%;width:2px;background:var(--cream)"></div>
+      </div>
+      <div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:5px">
+        <span><b style="color:var(--green)">${planMoney(t.booked)}</b> booked</span>
+        <span><b style="color:var(--gold)">${planMoney(t.penc)}</b> penciled</span>
+        <span><b>${planMoney(t.gap>0?t.gap:0)}</b> to goal</span>
+      </div>
+    </div>
+    <button class="btn btn-outline" onclick="setInqView('prospective')" style="padding:5px 12px;font-size:11px">Open calculator →</button>
+  </div>`;
+}
+
+// ── PLANNER: calendar + year views ──
+function renderPlanner(){
+  const el = document.getElementById('planner-content');
+  if(!el) return;
+  if(plannerView==='year') return renderPlannerYear(el);
+
+  const t = prospectiveTotals(plannerYear);
+  const yr = plannerYear, mo = plannerMonth;
+  const monthName = new Date(yr,mo,1).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  const firstDay  = new Date(yr,mo,1).getDay();
+  const daysInMo  = new Date(yr,mo+1,0).getDate();
+  const todayStr  = new Date().toISOString().split('T')[0];
+
+  const inqMap = {};
+  (DATA.inquiries||[]).filter(i=>!['archived','declined','booked'].includes(i.stage)).forEach(inq=>{
+    const nd = normalizeDate(inq.eventDate); if(!nd) return;
+    (inqMap[nd]=inqMap[nd]||[]).push(inq);
+  });
+  const bookMap = {};
+  getMergedEvents().forEach(e=>{ const d=(e.date||e.eventDate||''); if(d){ (bookMap[d]=bookMap[d]||[]).push(e); } });
+
+  el.innerHTML = `
+  <div style="max-width:920px;margin:0 auto">
+    ${plannerSummaryBar(t)}
+    <div class="cal-toolbar" style="margin-top:10px">
+      <button class="cal-nav-btn" onclick="plannerNav(-1)">‹</button>
+      <button class="cal-nav-btn" onclick="plannerNav(1)">›</button>
+      <button class="cal-today-btn" onclick="plannerToday()">Today</button>
+      <div class="cal-month-label">${monthName}</div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-gold" style="padding:4px 12px;font-size:11px">Calendar</button>
+        <button class="btn btn-outline" onclick="plannerView='year';renderPlanner()" style="padding:4px 12px;font-size:11px">Year</button>
+      </div>
+    </div>
+    <div class="cal-dow-row">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}</div>
+    <div class="cal-body">
+      ${Array.from({length:firstDay},()=>`<div class="cal-cell other-month"></div>`).join('')}
+      ${Array.from({length:daysInMo},(_,i)=>{
+        const day=i+1, ds=`${yr}-${String(mo+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+        const isToday=ds===todayStr;
+        const books=bookMap[ds]||[], inqs=inqMap[ds]||[];
+        const contested = inqs.length>1;
+        return `<div class="cal-cell${isToday?' today':''}${contested?' conflict-day':''}" ${contested?`onclick="plannerOpenDay='${ds}';renderPlanner()" style="cursor:pointer"`:''}>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="cal-dn">${day}</div>
+            ${contested?`<span style="font-size:9px;font-weight:700;color:#fff;background:var(--gold);border-radius:9px;padding:1px 6px">${inqs.length} ⚡</span>`:''}
+          </div>
+          ${books.slice(0,2).map(e=>`<div class="cal-pill" style="background:var(--s2);color:var(--muted)" title="${escHtml(e.client||'Booked')}">🔒 ${escHtml(e.client||'Booked')}</div>`).join('')}
+          ${inqs.slice(0,contested?1:2).map(inq=>plannerChip(inq)).join('')}
+          ${contested?`<div class="cal-more">+${inqs.length-1} more — compare</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>
+    ${plannerRecStrip(yr, mo)}
+    ${plannerOpenDay && (inqMap[plannerOpenDay]||[]).length>1 ? renderMatchup(plannerOpenDay, inqMap[plannerOpenDay]) : ''}
+  </div>`;
+}
+
+function plannerChip(inq){
+  const c = planChipClass(inq);
+  return `<div class="cal-pill" onclick="event.stopPropagation();openDetail('${inq.id}')" style="background:${c.bg};color:${c.fg};border:1px solid ${c.bd}" title="${escHtml(inq.name||'Inquiry')}">${isPenciled(inq)?'✓ ':''}${'★'.repeat(inq._stars||0)} ${escHtml((inq.name||'Inquiry').split(/[&,]/)[0])}</div>`;
+}
+
+function plannerNav(d){ plannerMonth+=d; if(plannerMonth<0){plannerMonth=11;plannerYear--;} if(plannerMonth>11){plannerMonth=0;plannerYear++;} plannerOpenDay=null; renderPlanner(); }
+function plannerToday(){ const n=new Date(); plannerMonth=n.getMonth(); plannerYear=n.getFullYear(); plannerOpenDay=null; renderPlanner(); }
+
+// ── MONTHLY RECOMMENDATION STRIP (the dead space under the calendar grid) ──
+// Calendar-aware: one best inquiry per open date (contested losers excluded from
+// Recommended), gated on availability, ranked by the existing score().
+function plannerMonthRows(yr, mo){
+  const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
+  const list = (DATA.inquiries||[]).filter(i=>{
+    if(['archived','declined','booked'].includes(i.stage)) return false;
+    const nd = normalizeDate(i.eventDate);
+    return nd && nd.slice(0,7)===pfx;
+  });
+  const byDate = {};
+  list.forEach(i=>{ const nd=normalizeDate(i.eventDate); (byDate[nd]=byDate[nd]||[]).push(i); });
+  return list.map(i=>{
+    const nd = normalizeDate(i.eventDate);
+    const sameDate = byDate[nd] || [i];
+    const winner = sameDate.slice().sort((a,b)=>(b._score||0)-(a._score||0))[0];
+    const booked   = !!(i._avail && i._avail.laurenBooked);
+    const hardFail = !!(i._hardFails && i._hardFails.length);
+    const belowBar = (i._stars||0) < 4 && !i._isVIP;
+    const lostDate = sameDate.length>1 && winner.id !== i.id;
+    const rec = !booked && !hardFail && !belowBar && !lostDate;
+    let availTag = booked ? 'booked' : hardFail ? 'fail' : lostDate ? 'lost' : belowBar ? 'low' : sameDate.length>1 ? 'won' : 'open';
+    return { inq:i, nd, rec, availTag };
+  });
+}
+function sortMonthRows(rows, mode){
+  return rows.slice().sort((a,b)=>{
+    if(mode==='money') return planPrice(b.inq)-planPrice(a.inq);
+    if(mode==='date')  return (a.nd||'').localeCompare(b.nd||'');
+    if(mode==='reach') return (b.inq._followerCount||0)-(a.inq._followerCount||0);
+    return ((b.inq._score||0)-(a.inq._score||0)) || (a.nd||'').localeCompare(b.nd||'');  // fit
+  });
+}
+function recChips(inq){
+  const C = { def:{bg:'var(--s2)',fg:'var(--muted)'}, gold:{bg:'var(--goldbg)',fg:'var(--gold)'}, grn:{bg:'var(--greenbg)',fg:'var(--green)'}, red:{bg:'var(--redbg)',fg:'var(--red)'} };
+  const out = [];
+  out.push(Object.assign({t:'💰 '+planMoney(planPrice(inq))}, C.def));
+  if(inq._miles!=null) out.push(Object.assign({t:'📍 '+inq._miles+'mi'}, C.def));
+  if(inq._isVIPPlanner)        out.push(Object.assign({t:'👑 VIP planner'}, C.gold));
+  else if(inq._isRepeatClient) out.push(Object.assign({t:'🔄 repeat'}, C.gold));
+  else if(!inq._noPlanner && /wedding|multi/i.test(inq.eventType||'')) out.push(Object.assign({t:'✓ planner'}, C.grn));
+  const fc = inq._followerCount||0;
+  if(fc>=50000)      out.push(Object.assign({t:'📸 '+Math.round(fc/1000)+'K ⚡'}, C.gold));
+  else if(fc>=10000) out.push(Object.assign({t:'📸 '+Math.round(fc/1000)+'K'}, C.grn));
+  if(inq._peakInfo && inq._peakInfo.isSaturday && inq._peakInfo.isPeakMonth) out.push(Object.assign({t:'🔥 peak Sat'}, C.def));
+  if(inq._noPlanner) out.push(Object.assign({t:'⛔ no planner'}, C.red));
+  return out;
+}
+function plannerAvailPill(tag){
+  const m = {
+    open:  ['✓ open',          'var(--greenbg)','var(--green)'],
+    won:   ['⚡ won the date',  'var(--goldbg)', 'var(--gold)'],
+    lost:  ['⚡ lost the date', 'var(--amberbg)','var(--amber)'],
+    low:   ['below ★★★★',       'var(--s2)',     'var(--muted)'],
+    booked:['🔒 booked',        'var(--s2)',     'var(--muted)'],
+    fail:  ['⛔ auto-decline',  'var(--redbg)',  'var(--red)']
+  };
+  const x = m[tag] || m.open;
+  return `<span style="flex:none;font-size:10px;font-weight:600;padding:2px 8px;border-radius:9px;white-space:nowrap;background:${x[1]};color:${x[2]}">${x[0]}</span>`;
+}
+function plannerRecRow(r){
+  const inq = r.inq, nd = r.nd;
+  const d = nd ? new Date(nd+'T12:00:00') : null;
+  const dow = d ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] : '';
+  const dnum = d ? d.getDate() : '?';
+  const peak = inq._peakInfo && inq._peakInfo.isSaturday && inq._peakInfo.isPeakMonth;
+  const stars = inq._stars||0;
+  const stClr = stars>=4?'var(--green)':stars>=3?'var(--amber)':'var(--muted)';
+  const penc = isPenciled(inq);
+  return `<div onclick="openDetail('${inq.id}')" style="display:flex;align-items:center;gap:11px;background:${r.rec?'#fff':'var(--s2)'};border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:8px;cursor:pointer;${r.rec?'':'opacity:.64'}">
+    <div style="flex:none;width:48px;text-align:center;border-radius:7px;padding:5px 0;background:${peak?'var(--amberbg)':'var(--s2)'}">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase">${dow}</div>
+      <div style="font-size:15px;font-weight:700;line-height:1.1">${dnum}</div>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;letter-spacing:-1px;color:${stClr}">${'★'.repeat(stars)}${'☆'.repeat(Math.max(0,5-stars))}</span></div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">${recChips(inq).map(c=>`<span style="font-size:10px;padding:1px 7px;border-radius:9px;background:${c.bg};color:${c.fg};white-space:nowrap">${c.t}</span>`).join('')}</div>
+    </div>
+    ${plannerAvailPill(r.availTag)}
+    <div style="flex:none;font-size:14px;font-weight:700;width:56px;text-align:right">${planMoney(planPrice(inq))}</div>
+    <div style="flex:none;display:flex;gap:5px" onclick="event.stopPropagation()">
+      <button class="btn ${penc?'btn-gold':'btn-outline'}" style="font-size:11px;padding:4px 9px" onclick="${penc?'passInq':'pencilIn'}('${inq.id}')" title="${penc?'Penciled — click to remove':'Pencil in'}">${penc?'✓':'✏'}</button>
+      <button class="btn btn-outline" style="font-size:11px;padding:4px 9px" onclick="respondToInquiry('${inq.id}')" title="Draft a reply email">✉</button>
+    </div>
+  </div>`;
+}
+function plannerRecStrip(yr, mo){
+  const rows = plannerMonthRows(yr, mo);
+  const recRows = rows.filter(r=>r.rec);
+  const view = plannerRecView, sort = plannerRecSort;
+  const shown = sortMonthRows(view==='all' ? rows : recRows, sort);
+  const monthName = new Date(yr,mo,1).toLocaleDateString('en-US',{month:'long'});
+  const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
+  const bookedM = getMergedEvents().filter(e=>{ const dd=(e.date||e.eventDate||''); return dd.slice(0,7)===pfx; }).reduce((s,e)=>s+(e.contractValue||e.grossAmount||0),0);
+  const pencM   = rows.filter(r=>isPenciled(r.inq)).reduce((s,r)=>s+planPrice(r.inq),0);
+  const recTotal = bookedM + recRows.reduce((s,r)=>s+planPrice(r.inq),0);
+  const sortOpts = [['fit','Best fit'],['money','Highest $'],['date','Soonest date'],['reach','Most followers']];
+  return `
+  <div style="margin-top:16px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+      <span style="font-size:16px;font-weight:600">${monthName} — ${recRows.length} recommended</span>
+      <span style="display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden">
+        <button onclick="plannerRecView='rec';renderPlanner()" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${view==='rec'?'var(--gold)':'transparent'};color:${view==='rec'?'#fff':'var(--muted)'}">Recommended</button>
+        <button onclick="plannerRecView='all';renderPlanner()" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${view==='all'?'var(--gold)':'transparent'};color:${view==='all'?'#fff':'var(--muted)'}">All</button>
+      </span>
+      <select onchange="plannerRecSort=this.value;renderPlanner()" style="font-size:11px;padding:4px 8px;border:1px solid var(--border2);border-radius:8px;background:var(--s3);color:var(--cream)">
+        ${sortOpts.map(o=>`<option value="${o[0]}"${sort===o[0]?' selected':''}>Sort: ${o[1]}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin:0 2px 12px">${view==='rec'?'Conflict-free picks — one best inquiry per open date. Pencil to add it to your plan, or ✉ to draft a reply.':'All '+monthName+' inquiries — date-conflict losers and below-bar leads are greyed.'}</div>
+    ${shown.length ? shown.map(r=>plannerRecRow(r)).join('') : `<div class="empty" style="padding:30px"><div class="empty-icon">🗓️</div><div class="empty-msg">No ${view==='rec'?'recommended ':''}inquiries for ${monthName}.</div></div>`}
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 13px;margin-top:6px;font-size:12px">
+      <span>Booked <b style="color:var(--green)">${planMoney(bookedM)}</b></span>
+      <span>Penciled <b style="color:var(--gold)">${planMoney(pencM)}</b></span>
+      <span>All ${recRows.length} recommended → <b>${planMoney(recTotal)}</b></span>
+    </div>
+  </div>`;
+}
+// Open the inquiry detail and pre-load the "available" reply template, scrolled to the draft.
+function respondToInquiry(id){
+  openDetail(id);
+  fillTemplate(id, 'available');
+  setTimeout(function(){ var el=document.getElementById('email-draft-area-'+id); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); }, 30);
+}
+
+// ── Matchup: head-to-head comparison for a contested date ──
+function renderMatchup(ds, inqs){
+  const sorted = inqs.slice().sort((a,b)=>((b._stars||0)-(a._stars||0))||(planPrice(b)-planPrice(a)));
+  const dlabel = new Date(ds+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  const winner = sorted[0];
+  return `<div class="card" style="margin-top:14px;padding:14px 16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <div style="font-weight:600">⚡ ${sorted.length} inquiries want ${dlabel}</div>
+      <button class="btn btn-outline" onclick="plannerOpenDay=null;renderPlanner()" style="padding:2px 9px;font-size:11px">✕ Close</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Recommended pick is highlighted — pencil the winner, pass the rest.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+      ${sorted.map(inq=>renderMatchupCard(inq, inq.id===winner.id)).join('')}
+    </div>
+  </div>`;
+}
+function renderMatchupCard(inq, isWin){
+  const c = planChipClass(inq);
+  const fc = inq._followerCount||0, fstr = fc>=1000 ? (fc/1000).toFixed(fc>=10000?0:1)+'K' : (fc||'—');
+  const pencil = isPenciled(inq);
+  const hasPlanner = inq.planner && !/n\/?a|none|^no$/i.test(String(inq.planner).trim());
+  const plannerVal = hasPlanner ? 'Yes' : (/wedding/i.test(inq.eventType||'') ? 'No ⛔' : '—');
+  const row=(l,v,hot)=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span style="color:var(--muted)">${l}</span><span style="font-weight:600;${hot?'color:var(--gold)':''}">${v}</span></div>`;
+  return `<div style="background:#fff;border:${isWin?'2px solid var(--gold)':'1px solid var(--border)'};border-radius:9px;padding:11px 12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px">
+      <span style="font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="openDetail('${inq.id}')">${escHtml(inq.name||'Inquiry')}</span>
+      ${isWin?`<span style="font-size:9px;font-weight:700;color:var(--gold);background:var(--goldbg);border-radius:9px;padding:1px 7px;flex:none">PICK</span>`:''}
+    </div>
+    <div style="font-size:14px;color:${c.fg};margin-bottom:5px">${'★'.repeat(inq._stars||0)}${'☆'.repeat(Math.max(0,5-(inq._stars||0)))}</div>
+    ${row('Value', planMoney(planPrice(inq)))}
+    ${row('Distance', inq._miles!=null?inq._miles+' mi':'—')}
+    ${row('Planner', plannerVal)}
+    ${row('Followers', fstr, fc>=50000)}
+    <button class="btn ${pencil?'btn-gold':'btn-outline'}" onclick="${pencil?'passInq':'pencilIn'}('${inq.id}')" style="width:100%;margin-top:8px;padding:5px;font-size:11px">${pencil?'✓ Penciled':'✏ Pencil in'}</button>
+  </div>`;
+}
+
+// ── Year-at-a-glance fill view ──
+function renderPlannerYear(el){
+  const t = prospectiveTotals(plannerYear);
+  const merged = getMergedEvents();
+  const months = Array.from({length:12},(_,m)=>{
+    const books = merged.filter(e=>{ const d=(e.date||e.eventDate||''); return d.slice(0,4)==String(plannerYear) && +d.slice(5,7)===m+1; });
+    const penc  = plannerPenciled(plannerYear).filter(i=>+normalizeDate(i.eventDate).slice(5,7)===m+1);
+    const open  = plannerCandidates(plannerYear).filter(i=>!isPenciled(i) && +normalizeDate(i.eventDate).slice(5,7)===m+1);
+    const rev   = books.reduce((s,e)=>s+(e.contractValue||e.grossAmount||0),0) + penc.reduce((s,i)=>s+planPrice(i),0);
+    return { name:new Date(2026,m,1).toLocaleDateString('en-US',{month:'short'}), books:books.length, penc:penc.length, open:open.length, rev };
+  });
+  el.innerHTML = `
+  <div style="max-width:760px;margin:0 auto">
+    ${plannerSummaryBar(t)}
+    <div class="cal-toolbar" style="margin-top:10px">
+      <button class="cal-nav-btn" onclick="plannerYear--;renderPlanner()">‹</button>
+      <button class="cal-nav-btn" onclick="plannerYear++;renderPlanner()">›</button>
+      <div class="cal-month-label">${plannerYear}</div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-outline" onclick="plannerView='calendar';renderPlanner()" style="padding:4px 12px;font-size:11px">Calendar</button>
+        <button class="btn btn-gold" style="padding:4px 12px;font-size:11px">Year</button>
+      </div>
+    </div>
+    <div class="card" style="padding:8px 14px">
+      ${months.map(mm=>`<div style="display:grid;grid-template-columns:38px 1fr 70px;align-items:center;gap:10px;padding:5px 0;border-top:1px solid var(--border)">
+        <span style="font-size:12px;color:var(--muted)">${mm.name}</span>
+        <div style="display:flex;gap:3px;align-items:center;flex-wrap:wrap;min-height:14px">
+          ${Array.from({length:mm.books},()=>`<span style="width:24px;height:13px;border-radius:3px;background:var(--green);opacity:.85"></span>`).join('')}
+          ${Array.from({length:mm.penc},()=>`<span style="width:24px;height:13px;border-radius:3px;background:rgba(139,26,26,0.18);border:1px solid var(--gold)"></span>`).join('')}
+          ${Array.from({length:mm.open},()=>`<span style="width:24px;height:13px;border-radius:3px;border:1.5px dashed var(--greenborder)"></span>`).join('')}
+        </div>
+        <span style="font-size:11px;color:var(--muted);text-align:right">${mm.rev?planMoney(mm.rev):'—'}</span>
+      </div>`).join('')}
+    </div>
+    <div style="display:flex;gap:16px;font-size:11px;color:var(--muted);margin-top:10px;padding:0 4px">
+      <span><span style="display:inline-block;width:11px;height:11px;border-radius:2px;background:var(--green);vertical-align:-1px;margin-right:4px"></span>Booked</span>
+      <span><span style="display:inline-block;width:11px;height:11px;border-radius:2px;background:rgba(139,26,26,0.18);border:1px solid var(--gold);vertical-align:-1px;margin-right:4px"></span>Penciled</span>
+      <span><span style="display:inline-block;width:11px;height:11px;border-radius:2px;border:1.5px dashed var(--greenborder);vertical-align:-1px;margin-right:4px"></span>Open recommended</span>
+    </div>
+  </div>`;
+}
+
+// ── PROSPECTIVE: standalone revenue calculator ──
+function renderProspective(){
+  const el = document.getElementById('prospective-content');
+  if(!el) return;
+  const year = plannerYear;
+  const t = prospectiveTotals(year);
+  const cands = plannerCandidates(year).slice().sort((a,b)=>
+    (isPenciled(b)-isPenciled(a)) || ((b._stars||0)-(a._stars||0)) ||
+    ((normalizeDate(a.eventDate)||'').localeCompare(normalizeDate(b.eventDate)||'')));
+  const pencCount = plannerPenciled(year).length;
+  const avg = pencCount ? t.penc/pencCount : 0;
+  const scale = Math.max(t.goal, t.projected)*1.08 || 1;
+  const needToGoal = t.gap>0 ? Math.ceil(t.gap / (avg||2576)) : 0;
+  const undecided = cands.filter(i=>!isPenciled(i)).length;
+
+  el.innerHTML = `
+  <div style="max-width:760px;margin:0 auto">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin:8px 0 6px">
+      <div style="font-size:20px;font-weight:600">🧮 Prospective revenue</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <button class="btn btn-outline" onclick="buildProspectiveSheet()" style="padding:2px 10px;font-size:11px" title="Build the standalone Year Planner Google Sheet for Lauren">⬇ Build Google Sheet</button>
+        <button class="btn btn-outline" onclick="plannerYear--;renderProspective()" style="padding:2px 9px">‹</button>
+        <span style="font-weight:600">${year}</span>
+        <button class="btn btn-outline" onclick="plannerYear++;renderProspective()" style="padding:2px 9px">›</button>
+      </div>
+    </div>
+    <div class="card" style="padding:16px 18px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:12px">
+        <div>
+          <div style="font-size:12px;color:var(--muted)">Projected ${year} revenue</div>
+          <div style="font-size:30px;font-weight:700;line-height:1">${planMoney(t.projected)}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:12px;color:var(--muted)">Goal
+            <input type="number" value="${t.goal}" onchange="setGoal(this.value)" style="width:92px;text-align:right;padding:3px 6px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">
+          </div>
+          <div style="font-size:13px;font-weight:600;margin-top:4px;color:${t.gap>0?'var(--red)':'var(--green)'}">${t.gap>0 ? planMoney(t.gap)+' short' : planMoney(-t.gap)+' over goal'}</div>
+        </div>
+      </div>
+      <div style="height:24px;border-radius:7px;background:var(--s2);display:flex;overflow:hidden;position:relative">
+        <div style="width:${t.booked/scale*100}%;background:var(--green);opacity:.85"></div>
+        <div style="width:${t.penc/scale*100}%;background:rgba(139,26,26,0.18);border-left:2px solid var(--gold)"></div>
+        <div style="position:absolute;top:-3px;bottom:-3px;left:${t.goal/scale*100}%;width:2px;background:var(--cream)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted2);margin-top:4px"><span>booked + penciled</span><span>goal ${planMoneyK(t.goal)}</span></div>
+      <div style="display:flex;gap:22px;margin-top:14px;flex-wrap:wrap">
+        <div><div style="font-size:17px;font-weight:600;color:var(--green)">${planMoney(t.booked)}</div><div style="font-size:11px;color:var(--muted)">Booked</div></div>
+        <div><div style="font-size:17px;font-weight:600;color:var(--gold)">${planMoney(t.penc)}</div><div style="font-size:11px;color:var(--muted)">${pencCount} penciled</div></div>
+        <div><div style="font-size:17px;font-weight:600">${planMoney(avg)}</div><div style="font-size:11px;color:var(--muted)">avg / penciled</div></div>
+        <div><div style="font-size:17px;font-weight:600;color:var(--muted)">+${planMoney(t.open)}</div><div style="font-size:11px;color:var(--muted)">open potential</div></div>
+      </div>
+      ${t.gap>0 && undecided ? `<div style="font-size:12px;color:var(--muted);border-top:1px solid var(--border);margin-top:12px;padding-top:10px">💡 Pencil <b>${needToGoal} more</b> recommended date${needToGoal===1?'':'s'} to clear your ${planMoneyK(t.goal)} goal · avg ${planMoney(avg||2576)}/event</div>` : ''}
+    </div>
+
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin:14px 0 4px">
+      <button class="btn btn-outline" onclick="plannerPreset('five')" style="padding:4px 11px;font-size:11px">Only ★★★★★</button>
+      <button class="btn btn-outline" onclick="plannerPreset('local')" style="padding:4px 11px;font-size:11px">Local (&lt;50mi)</button>
+      <button class="btn btn-outline" onclick="plannerPreset('all')" style="padding:4px 11px;font-size:11px">Pencil all</button>
+      <button class="btn btn-outline" onclick="plannerPreset('clear')" style="padding:4px 11px;font-size:11px">Clear</button>
+    </div>
+
+    ${cands.length ? cands.map(inq=>renderCandRow(inq)).join('') :
+      `<div class="empty" style="padding:40px"><div class="empty-icon">🗓️</div><div class="empty-msg">No recommended open inquiries for ${year} yet.<br><span style="font-size:12px;color:var(--muted)">Candidates are 4★+ inquiries on future dates that aren't booked or declined.</span></div></div>`}
+  </div>`;
+}
+
+function renderCandRow(inq){
+  const c = planChipClass(inq);
+  const nd = normalizeDate(inq.eventDate);
+  const dstr = nd ? new Date(nd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'TBD';
+  const fc = inq._followerCount||0, fstr = fc>=1000 ? (fc/1000).toFixed(fc>=10000?0:1)+'K followers' : '';
+  const pencil = isPenciled(inq);
+  const meta = [dstr, inq._miles!=null?inq._miles+'mi':'', inq.package||'', fstr].filter(Boolean).join(' · ');
+  return `<div style="display:flex;align-items:center;gap:11px;padding:9px 4px;border-top:1px solid var(--border)">
+    <button onclick="${pencil?'passInq':'pencilIn'}('${inq.id}')" title="${pencil?'Penciled — click to remove':'Pencil in'}" aria-label="Toggle pencil"
+      style="flex:none;width:22px;height:22px;border-radius:5px;cursor:pointer;border:1.5px solid ${pencil?'var(--gold)':'var(--border2)'};background:${pencil?'var(--gold)':'transparent'};color:#fff;font-size:13px;line-height:1">${pencil?'✓':''}</button>
+    <div style="flex:1;min-width:0;cursor:pointer" onclick="openDetail('${inq.id}')">
+      <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;color:${c.fg}">${'★'.repeat(inq._stars||0)}</span></div>
+      <div style="font-size:11px;color:var(--muted)">${escHtml(meta)}</div>
+    </div>
+    <div style="font-size:13px;font-weight:600;flex:none">${planMoney(planPrice(inq))}</div>
+  </div>`;
+}
+
 // ════════════════════════════════ CALENDAR ════════════════════════════════
 
 const GCAL_CLIENT_ID = '620326222331-heq667r9dbamd2f6v9mbfp49omj5mlam.apps.googleusercontent.com';
@@ -6797,7 +7391,7 @@ function showPage(name) {
   document.getElementById('page-'+name).classList.add('active');
   const navLabel = name === 'contractors' ? 'team' : name; // Team tab's page id is 'contractors'
   document.querySelectorAll('.nav-btn').forEach(b=>{ if(b.textContent.toLowerCase().includes(navLabel)) b.classList.add('active'); });
-  if (name==='inquiries') renderInquiries();
+  if (name==='inquiries') setInqView(inqView);
   if (name==='events') renderEvents();
   if (name==='deliverables') renderDeliverables();
   if (name==='contractors') renderContractors();
