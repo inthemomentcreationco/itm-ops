@@ -852,6 +852,7 @@ let DATA = {
   payments:         [],
   assignments:      [],
   bookedDates:      [],
+  venueDistances:   JSON.parse(localStorage.getItem('itm_venue_dist') || '{}'),   // resolved venue → {miles,hours,address}
   availability:     [],
   retainerIncome:   [],
   adHocPayments:    [],
@@ -1217,7 +1218,11 @@ async function syncData() {
     if (calReady) { window._silentCalSync = true; await fetchCalendarEvents(); window._silentCalSync = false; }
   } catch(e) { window._silentCalSync = false; console.warn('OAuth calendar sync skipped:', e.message); }
 
-  // 4. Re-score all inquiries
+  // 4. Resolve real venue distances (Google Maps, server-side + cached) before scoring.
+  //    Falls back to keyword guessing if no MAPS_API_KEY is set.
+  await resolveVenueDistances();
+
+  // 5. Re-score all inquiries
   // Merge any stage updates from events back into inquiries
   clearBookingPrefs();   // rebuild booking-derived VIP/venue lists from fresh data
   DATA.inquiries.forEach(inq => {
@@ -1419,12 +1424,13 @@ function buildBookingPrefs(){
 }
 
 // Location desirability (DC home base): DC > VA > International > MD > major US metro > remote.
-function locationTier(loc){
+// `loc` should be the resolved address when available; `miles` = real geocoded distance (or null).
+function locationTier(loc, miles){
   const l = String(loc||'').toLowerCase();
   if(!l || l.length<2) return { pts:9, detail:'No location given' };
   if(/london|paris|rome|italy|france|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana|tulum|greece|spain|portugal|ireland|tuscany|amalfi|bali|dubai|abroad|international|overseas|costa rica|santorini/i.test(l))
     return { pts:16, detail:'International — built-in travel + strong marketing' };
-  if(/washington.?dc|district of columbia|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l))
+  if(/washington.?dc|district of columbia|fairmont|dahlgren|georgetown univ|the wharf|union market|hay.?adams|mayflower|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l))
     return { pts:18, detail:'Washington DC — home turf, ideal' };
   if(/arlington|alexandria|crystal city|clarendon|falls church|mclean|fairfax|reston|herndon|vienna|tysons|\bva\b|virginia|richmond|charlottesville|norfolk|virginia beach|fredericksburg|loudoun|leesburg|middleburg/i.test(l))
     return { pts:16, detail:'Virginia (DMV) — close & preferred' };
@@ -1432,7 +1438,17 @@ function locationTier(loc){
     return { pts:13, detail:'Maryland (DMV) — close, workable' };
   if(/new york|nyc|manhattan|brooklyn|jersey|philadelphia|philly|boston|chicago|miami|los angeles|\bla\b|santa monica|malibu|beverly|san francisco|bay area|atlanta|nashville|austin|dallas|seattle|denver|new orleans|charleston|savannah|scottsdale|phoenix/i.test(l))
     return { pts:9, detail:'Major US city — far but marketable' };
-  return { pts:4, detail:'Outside the DMV & major metros — far, less marketing pull' };
+  // If we have a REAL geocoded distance, classify by it (handles addresses with state abbreviations)
+  if(miles != null){
+    if(miles <= 12)  return { pts:18, detail:'DC area — '+miles+'mi' };
+    if(miles <= 60)  return { pts:15, detail:'DMV — close ('+miles+'mi)' };
+    if(miles <= 150) return { pts:9,  detail:'Day-trip range ('+miles+'mi)' };
+    return { pts:4, detail:'Far ('+miles+'mi) — out of area' };
+  }
+  if(/\b(alabama|alaska|arizona|arkansas|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new mexico|ohio|oklahoma|oregon|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|west virginia|wisconsin|wyoming)\b/i.test(l))
+    return { pts:4, detail:'Out of the area — far, less marketing pull' };
+  // No city/state hint and no geocode — just a venue name. She's DC-based, so assume local.
+  return { pts:14, detail:'Assumed local (no city given — add the city/address to confirm)' };
 }
 
 // Peak wedding season: May–October (months 4–9, 0-indexed)
@@ -1459,10 +1475,27 @@ function parseBudget(str) {
   return nums.reduce((a,b)=>a+b,0)/nums.length;
 }
 
+// Ask the backend to geocode any venues we haven't resolved yet (cached server-side + locally).
+// No-op / falls back to keyword guessing if MAPS_API_KEY isn't set in Apps Script.
+async function resolveVenueDistances(){
+  try {
+    const locs = [...new Set((DATA.inquiries||[]).map(i=>(i.location||'').trim()).filter(Boolean))]
+      .filter(t => !DATA.venueDistances[t.toLowerCase().trim()]);
+    if(!locs.length) return;
+    const res = await apiCall('resolveVenues', { locations: locs });
+    if(res && res.distances){
+      Object.keys(res.distances).forEach(k => { DATA.venueDistances[k.toLowerCase().trim()] = res.distances[k]; });
+      localStorage.setItem('itm_venue_dist', JSON.stringify(DATA.venueDistances));
+    }
+  } catch(e){ console.warn('Venue distance resolve skipped:', e.message); }
+}
+
 function estimateMiles(loc) {
-  if (!loc) return 150;
-  const l = loc.toLowerCase();
-  if (/washington.?dc|district of columbia|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l)) return 5;
+  if (!loc) return 25;
+  const l = loc.toLowerCase().trim();
+  const r = DATA.venueDistances && DATA.venueDistances[l];   // real geocoded distance (from Google Maps) wins
+  if (r && r.miles != null) return r.miles;
+  if (/washington.?dc|district of columbia|fairmont|dahlgren|georgetown univ|the wharf|union market|hay.?adams|mayflower|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l)) return 5;
   if (/bethesda|chevy chase|silver spring|takoma|college park|hyattsville/i.test(l)) return 14;
   if (/arlington|alexandria|crystal city|clarendon|falls church|mclean/i.test(l)) return 10;
   if (/rockville|gaithersburg|germantown/i.test(l)) return 26;
@@ -1489,26 +1522,33 @@ function estimateMiles(loc) {
   if (/\bpa\b|pennsylvania/i.test(l)) return 185;
   if (/\bny\b|new york/i.test(l)) return 240;
   if (/\bnc\b|north carolina/i.test(l)) return 360;
-  return 150;
+  // Explicit far state named → treat as a real trip (catches "Tulsa Oklahoma" etc.)
+  if (/\b(alabama|alaska|arizona|arkansas|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|ohio|oklahoma|oregon|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|west virginia|wisconsin|wyoming)\b/i.test(l)) return 650;
+  // No geographic hint (just a venue name) → assume LOCAL (she's DC-based; unknowns are almost always local), not far
+  return 25;
 }
 
-function getTravelInfo(miles) {
+// Travel estimate — Lauren rents a car ($40/day) and drives; gas ~$4.50/gal at ~28mpg.
+// Amtrak isn't used when it's driveable. 3+ hour drives need a hotel; only truly far events fly.
+function getTravelInfo(miles, hours) {
+  const GAS = 4.50, MPG = 28, CAR = 40;
+  if (hours == null) hours = miles / 55;                 // ~55 mph average if drive time unknown
+  const gas = Math.round((miles * 2 / MPG) * GAS);       // round-trip gas
+  const hrStr = Math.round(hours * 10) / 10;
   let category, options, feeMin, feeMax, feeNote;
   if (miles < 15) {
-    category='local'; feeMin=0; feeMax=0; feeNote='No fee needed';
-    options=[{icon:'🚗',name:'Uber/Lyft',detail:'Direct to venue',cost:'$18–$40'}];
-  } else if (miles < 50) {
-    category='regional'; feeMin=75; feeMax=150; feeNote='Light regional travel';
-    options=[{icon:'🚗',name:'Uber/Lyft',detail:'30–90 min direct',cost:'$40–$90'},{icon:'🚆',name:'MARC/VRE + Uber',detail:'Train + short Uber',cost:'$25–$55'}];
-  } else if (miles < 150) {
-    category='day trip'; feeMin=150; feeMax=300; feeNote='Day trip — train or long rideshare';
-    options=[{icon:'🚆',name:'Amtrak',detail:`~${Math.round(miles/55)}hr, book early`,cost:'$50–$120 RT'},{icon:'🚗',name:'Long Uber',detail:'One-way only',cost:`$${Math.round(miles*1.8)}–$${Math.round(miles*2.4)}`}];
+    category='local'; feeMin=0; feeMax=0; feeNote='Local — no travel fee';
+    options=[{icon:'🚗',name:'Drive',detail:'Local',cost:'~$'+Math.max(gas,8)+' gas'}];
+  } else if (hours < 3) {
+    const base = CAR + gas;
+    category='day trip'; feeMin=Math.round(base*0.9); feeMax=Math.round(base*1.4); feeNote=`${hrStr}hr drive — day trip`;
+    options=[{icon:'🚗',name:'Rental car (1 day)',detail:'$40/day + gas',cost:`$${CAR} + ~$${gas} gas`}];
   } else if (miles < 800) {
-    category='fly/train'; feeMin=300; feeMax=550; feeNote='Flight or Amtrak required';
-    options=[{icon:'✈️',name:'Flight',detail:'1–2hr + airport',cost:miles<400?'$120–$280 RT':'$200–$420 RT'},{icon:'🚆',name:'Amtrak',detail:`~${Math.round(miles/55)}hr if under 350mi`,cost:'$80–$220 RT'}];
+    category='overnight drive'; feeMin=CAR*2+gas+150; feeMax=CAR*2+gas+300; feeNote=`${hrStr}hr drive — needs an overnight`;
+    options=[{icon:'🚗',name:'Rental car (2 days)',detail:'$80 + gas',cost:`$80 + ~$${gas} gas`},{icon:'🏨',name:'Hotel (1 night)',detail:'3+ hr away',cost:'$150–$300'}];
   } else {
-    category='destination'; feeMin=800; feeMax=1600; feeNote='Destination event — flight + hotel';
-    options=[{icon:'✈️',name:'Flight',detail:`${Math.round(miles/500)}+ hour flight`,cost:miles>3000?'$450–$1,000 RT':'$220–$550 RT'},{icon:'🏨',name:'Hotel (1–2 nights)',detail:'Required for early events',cost:'$130–$300/night'}];
+    category='destination'; feeMin=600; feeMax=1400; feeNote='Too far to drive — flight + hotel';
+    options=[{icon:'✈️',name:'Flight (round trip)',detail:`${Math.round(miles/500)}+ hr away`,cost:miles>3000?'$450–$1,000':'$220–$550'},{icon:'🏨',name:'Hotel (1–2 nights)',detail:'Required',cost:'$150–$300/night'}];
   }
   return { category, options, feeMin, feeMax, feeNote, miles };
 }
@@ -1669,7 +1709,8 @@ function score(inq) {
   const miles = estimateMiles(inq.location);
   const months = monthsUntil(inq.eventDate);
   const avail = inq.eventDate ? getAvailabilityForDate(inq.eventDate) : null;
-  const travel = getTravelInfo(miles);
+  const _vd = DATA.venueDistances && DATA.venueDistances[(inq.location||'').toLowerCase().trim()];
+  const travel = getTravelInfo(miles, _vd && _vd.hours);
   const planner = inq.planner || '';
   const hasPlanner = /planner|coordinator|yes/i.test(planner) && !/no planner|don't have|not yet|considering/i.test(planner);
   const noPlanner = !hasPlanner && (/no planner|don't have|no,|not yet/i.test(planner) || planner.trim().length < 4);
@@ -1716,25 +1757,22 @@ function score(inq) {
   base+=bPts;
 
   // ── 2. LOCATION DESIRABILITY (18) — DC > VA > Intl > MD > major US > remote ──
-  const lt = locationTier(loc);
+  const lt = locationTier((_vd && _vd.address) || loc, (_vd && _vd.miles!=null) ? _vd.miles : null);
   criteria.push({label:'Location (DC home base)',pts:lt.pts,max:18,color:lt.pts>=14?'g':lt.pts>=9?'a':'r',detail:lt.detail});
   base+=lt.pts;
 
-  // ── 3. TEAM AVAILABILITY (16) — lead time dropped; only availability matters ──
-  let aPts=9, aColor='a', aDetail='Availability unknown for this date';
+  // ── 3. TEAM AVAILABILITY (16) — can ANYONE shoot it? Lauren being booked is NOT a blocker
+  // if a contractor is free (assign another shooter). Only a real no-one-available is a problem.
+  let aPts=12, aColor='a', aDetail='Availability unknown — no team data for this date';
   if(avail){
-    if(avail.laurenBooked){
-      aPts=0;aColor='r';
-      const calEvent = DATA.bookedDates.find(b=>normalizeDate(b.date)===normalizeDate(inq.eventDate));
-      aDetail=`⛔ You are already booked (${calEvent?.label||'calendar event'})`;
+    const free = (avail.freeContractors||[]);
+    if(avail.severity==='ok' || free.length>0){
+      aPts=16; aColor='g';
+      aDetail = (avail.laurenBooked ? "You're booked — assign a shooter · " : '') + '✓ ' + avail.verdict;
     } else if(avail.severity==='conflict'){
-      aPts=4;aColor='r';aDetail=`⚡ ${avail.verdict}`;
-    } else if(avail.severity==='unknown' && DATA.availability.length>0){
-      aPts=9;aColor='a';aDetail=`⚠️ ${avail.unknownContractors.length} team member(s) haven't submitted availability`;
-    } else if(avail.freeContractors && avail.freeContractors.length>0){
-      aPts=16;aColor='g';aDetail=`✓ Free: ${avail.freeContractors.map(c=>c.name.split(' ')[0]).join(', ')}`;
-    } else {
-      aPts=12;aColor='g';aDetail='No conflicts found for this date';
+      aPts=4; aColor='r'; aDetail = `⚡ ${avail.verdict}`;
+    } else if(avail.severity==='unknown'){
+      aPts=12; aColor='a'; aDetail = DATA.availability.length>0 ? avail.verdict : 'No availability submitted yet for this date';
     }
     if(!DATA.availability.length && !DATA.bookedDates.length){ aDetail+=' · (connect calendar + availability for real team data)'; }
   }
@@ -1771,12 +1809,12 @@ function score(inq) {
 
   const total = Math.min(100, base + iPts);
 
-  // Hard fails — no-planner wedding auto-declines UNLESS a major influencer (≥50K)
+  // Hard fails — only REAL dealbreakers. A booked date is NOT one (a contractor can shoot it);
+  // the only true availability dealbreaker is no one being free, handled as a soft penalty above.
   const hardFails = [];
   if(isWedding && noPlanner && followerCount < FOLLOWER_NOPLANNER_OVERRIDE) hardFails.push('No planner — auto-decline for weddings (not a major influencer)');
   if(budget>0 && budget<myPrice*.5) hardFails.push(`Budget ($${budget.toLocaleString()}) is less than half the $${myPrice.toLocaleString()} package`);
   if(months!==null && months<0)     hardFails.push('Event date has passed');
-  if(avail?.laurenBooked)           hardFails.push('You are already booked on this date (Google Calendar)');
 
   inq._isVIP     = isVIP;            // VIP → auto-book verdict (unless hard fail)
   inq._scored    = true;
@@ -6132,7 +6170,7 @@ function isCandidate(inq){
   if(!nd || nd < new Date().toISOString().split('T')[0]) return false;
   if(isPenciled(inq)) return true;
   if(inq._hardFails && inq._hardFails.length) return false;
-  return (inq._stars||0) >= 4 || inq._isVIP;
+  return (inq._stars||0) >= 3 || inq._isVIP;   // 3★+ = worth considering (was 4★ — too strict)
 }
 
 function plannerCandidates(year){ return (DATA.inquiries||[]).filter(i => isCandidate(i) && (!year || inqYear(i)==String(year))); }
@@ -6314,21 +6352,22 @@ function plannerMonthRows(yr, mo){
   }));
   const byDate = {};
   list.forEach(i=>{ const nd=normalizeDate(i.eventDate); (byDate[nd]=byDate[nd]||[]).push(i); });
-  // "Viable" = could actually be recommended: not auto-declined, not on a booked date, 4★+ or VIP
-  const isViable = x => !(x._avail && x._avail.laurenBooked) && !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 4 || x._isVIP);
+  // "Worth considering" = not auto-declined and a decent fit (3★+ or VIP). A booked date is
+  // NOT a disqualifier (assign another shooter), and losing a date conflict no longer hides it —
+  // we just flag the strongest pick on each contested date.
+  const isViable = x => !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 3 || x._isVIP);
   return list.map(i=>{
     const nd = normalizeDate(i.eventDate);
     const sameDate = byDate[nd] || [i];
-    const booked   = !!(i._avail && i._avail.laurenBooked);
     const hardFail = !!(i._hardFails && i._hardFails.length);
-    const belowBar = (i._stars||0) < 4 && !i._isVIP;
-    const viableSelf = !booked && !hardFail && !belowBar;
-    // The date's winner is the best VIABLE inquiry — never a disqualified one
+    const belowBar = (i._stars||0) < 3 && !i._isVIP;
+    const viableSelf = !hardFail && !belowBar;
+    const rec = viableSelf;                                  // recommend every decent, non-declined lead
     const winner = sameDate.filter(isViable).sort((a,b)=>(b._score||0)-(a._score||0))[0] || null;
-    const lostDate = viableSelf && winner && winner.id !== i.id;   // only viable rows can "lose" to a better viable pick
-    const rec = viableSelf && winner && winner.id === i.id;
-    let availTag = booked ? 'booked' : hardFail ? 'fail' : belowBar ? 'low' : lostDate ? 'lost' : (sameDate.filter(isViable).length>1 ? 'won' : 'open');
-    return { inq:i, nd, rec, availTag };
+    const bestOnDate = viableSelf && winner && winner.id===i.id && sameDate.filter(isViable).length>1;
+    const lauBooked = !!(i._avail && i._avail.laurenBooked);
+    let availTag = hardFail ? 'fail' : belowBar ? 'low' : bestOnDate ? 'won' : 'open';
+    return { inq:i, nd, rec, availTag, lauBooked };
   });
 }
 function sortMonthRows(rows, mode){
@@ -6351,6 +6390,7 @@ function recChips(inq){
   if(fc>=50000)      out.push(Object.assign({t:'📸 '+Math.round(fc/1000)+'K ⚡'}, C.gold));
   else if(fc>=10000) out.push(Object.assign({t:'📸 '+Math.round(fc/1000)+'K'}, C.grn));
   if(inq._peakInfo && inq._peakInfo.isSaturday && inq._peakInfo.isPeakMonth) out.push(Object.assign({t:'🔥 peak Sat'}, C.def));
+  if(inq._avail && inq._avail.laurenBooked) out.push(Object.assign({t:'👥 needs a 2nd shooter'}, C.def));
   if(inq._noPlanner) out.push(Object.assign({t:'⛔ no planner'}, C.red));
   return out;
 }
@@ -6366,11 +6406,9 @@ function plannerAvailPill(tag, inq){
     label = '⛔ ' + reason; bg = 'var(--redbg)'; fg = 'var(--red)';
   } else {
     const m = {
-      open:  ['✓ open',          'var(--greenbg)','var(--green)'],
-      won:   ['★ best pick',     'var(--goldbg)', 'var(--gold)'],   // best of several wanting this date
-      lost:  ['skip — better one same day','var(--s2)','var(--muted)'],
-      low:   ['below ★★★★',       'var(--s2)',     'var(--muted)'],
-      booked:['🔒 date booked',   'var(--s2)',     'var(--muted)']
+      open:  ['✓ worth it',                 'var(--greenbg)','var(--green)'],
+      won:   ['★ best on this date',         'var(--goldbg)', 'var(--gold)'],   // strongest of several that day
+      low:   ['below ★★★',                   'var(--s2)',     'var(--muted)']
     };
     const x = m[tag] || m.open; label = x[0]; bg = x[1]; fg = x[2];
   }
@@ -6425,15 +6463,14 @@ function plannerRecStrip(yr, mo){
         ${sortOpts.map(o=>`<option value="${o[0]}"${sort===o[0]?' selected':''}>Sort: ${o[1]}</option>`).join('')}
       </select>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin:0 2px 8px">${view==='rec'?'One best inquiry per open date. Pencil (✏) to add it to your plan, or ✉ to draft a reply. ★ = fit score (★★★★+ = recommended).':'Every '+monthName+' inquiry — greyed rows aren\'t recommended (see why on the right).'}</div>
+    <div style="font-size:11px;color:var(--muted);margin:0 2px 8px">${view==='rec'?'Every decent lead worth a look (★★★+, not auto-declined). The strongest pick on a contested date is starred. Pencil (✏) to add to your plan, or ✉ to reply.':'Every '+monthName+' inquiry — greyed rows are below ★★★ or auto-declined (reason on the right).'}</div>
     <div style="display:flex;gap:6px 14px;flex-wrap:wrap;font-size:10px;color:var(--muted);background:var(--s2);border-radius:8px;padding:8px 11px;margin:0 0 12px">
       <span style="font-weight:600;color:var(--cream)">Key:</span>
-      <span><b style="color:var(--green)">✓ open</b> free date</span>
-      <span><b style="color:var(--gold)">★ best pick</b> top of several that day</span>
-      <span><b>skip — better one same day</b></span>
-      <span><b>below ★★★★</b> under the bar</span>
+      <span><b style="color:var(--green)">✓ worth it</b> a solid lead to consider</span>
+      <span><b style="color:var(--gold)">★ best on this date</b> strongest of several that day</span>
+      <span><b>below ★★★</b> weak fit (not recommended)</span>
       <span><b style="color:var(--red)">⛔ reason</b> auto-declined (why shown)</span>
-      <span><b>🔒 date booked</b></span>
+      <span><b>👥 needs a 2nd shooter</b> your calendar's busy but the team's free</span>
       <span style="width:100%;color:var(--muted2)">💰 = your package price (what you'd charge) — not the client's budget</span>
     </div>
     ${shown.length ? shown.map(r=>plannerRecRow(r)).join('') : `<div class="empty" style="padding:30px"><div class="empty-icon">🗓️</div><div class="empty-msg">No ${view==='rec'?'recommended ':''}inquiries for ${monthName}.</div></div>`}
@@ -6453,13 +6490,13 @@ function respondToInquiry(id){
 
 // ── Matchup: head-to-head comparison for a contested date ──
 function renderMatchup(ds, inqs){
-  const isViable = x => !(x._avail && x._avail.laurenBooked) && !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 4 || x._isVIP);
+  const isViable = x => !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 3 || x._isVIP);
   const sorted = inqs.slice().sort((a,b)=>((b._stars||0)-(a._stars||0))||(planPrice(b)-planPrice(a)));
   const dlabel = new Date(ds+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
   const winner = sorted.filter(isViable).sort((a,b)=>(b._score||0)-(a._score||0))[0] || null;   // best VIABLE one, or none
   const subtitle = winner
     ? 'The recommended pick is highlighted — pencil it, pass the rest.'
-    : 'None of these clear the bar — each is auto-declined or below ★★★★ (reason on every card). No recommended pick for this date.';
+    : 'None of these clear the bar — each is auto-declined or below ★★★ (reason on every card). No recommended pick for this date.';
   return `<div class="card" style="margin-top:14px;padding:14px 16px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
       <div style="font-weight:600">⚡ ${sorted.length} inquiries want ${dlabel}</div>
