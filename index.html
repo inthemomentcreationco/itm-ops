@@ -6218,7 +6218,7 @@ function renderPlanner(){
   const todayStr  = new Date().toISOString().split('T')[0];
 
   const inqMap = {};
-  (DATA.inquiries||[]).filter(i=>!['archived','declined','booked'].includes(i.stage)).forEach(inq=>{
+  dedupeInquiries((DATA.inquiries||[]).filter(i=>!['archived','declined','booked'].includes(i.stage))).forEach(inq=>{
     const nd = normalizeDate(inq.eventDate); if(!nd) return;
     (inqMap[nd]=inqMap[nd]||[]).push(inq);
   });
@@ -6273,13 +6273,27 @@ function plannerToday(){ const n=new Date(); plannerMonth=n.getMonth(); plannerY
 // ── MONTHLY RECOMMENDATION STRIP (the dead space under the calendar grid) ──
 // Calendar-aware: one best inquiry per open date (contested losers excluded from
 // Recommended), gated on availability, ranked by the existing score().
+// Collapse duplicate inquiry submissions (same person, same event date) into one row,
+// keeping the most recent. People often submit the form more than once — without this
+// they show up multiple times and falsely look like a "contested" date.
+function dedupeInquiries(arr){
+  const seen = {}, out = [];
+  (arr||[]).forEach(i=>{
+    const id = (i.email||'').toLowerCase().trim() || (i.name||'').toLowerCase().trim();
+    const key = id + '|' + (normalizeDate(i.eventDate)||'');
+    if(key === '|'){ out.push(i); return; }
+    if(!(key in seen)){ seen[key] = out.length; out.push(i); }
+    else { const ex = out[seen[key]]; if(new Date(i.timestamp||0) > new Date(ex.timestamp||0)) out[seen[key]] = i; }
+  });
+  return out;
+}
 function plannerMonthRows(yr, mo){
   const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
-  const list = (DATA.inquiries||[]).filter(i=>{
+  const list = dedupeInquiries((DATA.inquiries||[]).filter(i=>{
     if(['archived','declined','booked'].includes(i.stage)) return false;
     const nd = normalizeDate(i.eventDate);
     return nd && nd.slice(0,7)===pfx;
-  });
+  }));
   const byDate = {};
   list.forEach(i=>{ const nd=normalizeDate(i.eventDate); (byDate[nd]=byDate[nd]||[]).push(i); });
   return list.map(i=>{
@@ -6318,17 +6332,27 @@ function recChips(inq){
   if(inq._noPlanner) out.push(Object.assign({t:'⛔ no planner'}, C.red));
   return out;
 }
-function plannerAvailPill(tag){
-  const m = {
-    open:  ['✓ open',          'var(--greenbg)','var(--green)'],
-    won:   ['⚡ won the date',  'var(--goldbg)', 'var(--gold)'],
-    lost:  ['⚡ lost the date', 'var(--amberbg)','var(--amber)'],
-    low:   ['below ★★★★',       'var(--s2)',     'var(--muted)'],
-    booked:['🔒 booked',        'var(--s2)',     'var(--muted)'],
-    fail:  ['⛔ auto-decline',  'var(--redbg)',  'var(--red)']
-  };
-  const x = m[tag] || m.open;
-  return `<span style="flex:none;font-size:10px;font-weight:600;padding:2px 8px;border-radius:9px;white-space:nowrap;background:${x[1]};color:${x[2]}">${x[0]}</span>`;
+function plannerAvailPill(tag, inq){
+  let label, bg, fg;
+  if(tag==='fail'){
+    const hf = (inq && inq._hardFails) || [];
+    const reason = hf.some(h=>/planner/i.test(h)) ? 'no planner'
+                 : hf.some(h=>/half|budget/i.test(h)) ? 'low budget'
+                 : hf.some(h=>/passed/i.test(h)) ? 'past date'
+                 : hf.some(h=>/booked/i.test(h)) ? "you're booked"
+                 : 'not a fit';
+    label = '⛔ ' + reason; bg = 'var(--redbg)'; fg = 'var(--red)';
+  } else {
+    const m = {
+      open:  ['✓ open',          'var(--greenbg)','var(--green)'],
+      won:   ['★ best pick',     'var(--goldbg)', 'var(--gold)'],   // best of several wanting this date
+      lost:  ['skip — better one same day','var(--s2)','var(--muted)'],
+      low:   ['below ★★★★',       'var(--s2)',     'var(--muted)'],
+      booked:['🔒 date booked',   'var(--s2)',     'var(--muted)']
+    };
+    const x = m[tag] || m.open; label = x[0]; bg = x[1]; fg = x[2];
+  }
+  return `<span style="flex:none;font-size:10px;font-weight:600;padding:2px 8px;border-radius:9px;white-space:nowrap;background:${bg};color:${fg}">${label}</span>`;
 }
 function plannerRecRow(r){
   const inq = r.inq, nd = r.nd;
@@ -6348,7 +6372,7 @@ function plannerRecRow(r){
       <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;letter-spacing:-1px;color:${stClr}">${'★'.repeat(stars)}${'☆'.repeat(Math.max(0,5-stars))}</span></div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">${recChips(inq).map(c=>`<span style="font-size:10px;padding:1px 7px;border-radius:9px;background:${c.bg};color:${c.fg};white-space:nowrap">${c.t}</span>`).join('')}</div>
     </div>
-    ${plannerAvailPill(r.availTag)}
+    ${plannerAvailPill(r.availTag, inq)}
     <div style="flex:none;font-size:14px;font-weight:700;width:56px;text-align:right">${planMoney(planPrice(inq))}</div>
     <div style="flex:none;display:flex;gap:5px" onclick="event.stopPropagation()">
       <button class="btn ${penc?'btn-gold':'btn-outline'}" style="font-size:11px;padding:4px 9px" onclick="${penc?'passInq':'pencilIn'}('${inq.id}')" title="${penc?'Penciled — click to remove':'Pencil in'}">${penc?'✓':'✏'}</button>
@@ -6379,7 +6403,17 @@ function plannerRecStrip(yr, mo){
         ${sortOpts.map(o=>`<option value="${o[0]}"${sort===o[0]?' selected':''}>Sort: ${o[1]}</option>`).join('')}
       </select>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin:0 2px 12px">${view==='rec'?'Conflict-free picks — one best inquiry per open date. Pencil to add it to your plan, or ✉ to draft a reply.':'All '+monthName+' inquiries — date-conflict losers and below-bar leads are greyed.'}</div>
+    <div style="font-size:11px;color:var(--muted);margin:0 2px 8px">${view==='rec'?'One best inquiry per open date. Pencil (✏) to add it to your plan, or ✉ to draft a reply. ★ = fit score (★★★★+ = recommended).':'Every '+monthName+' inquiry — greyed rows aren\'t recommended (see why on the right).'}</div>
+    <div style="display:flex;gap:6px 14px;flex-wrap:wrap;font-size:10px;color:var(--muted);background:var(--s2);border-radius:8px;padding:8px 11px;margin:0 0 12px">
+      <span style="font-weight:600;color:var(--cream)">Key:</span>
+      <span><b style="color:var(--green)">✓ open</b> free date</span>
+      <span><b style="color:var(--gold)">★ best pick</b> top of several that day</span>
+      <span><b>skip — better one same day</b></span>
+      <span><b>below ★★★★</b> under the bar</span>
+      <span><b style="color:var(--red)">⛔ reason</b> auto-declined (why shown)</span>
+      <span><b>🔒 date booked</b></span>
+      <span style="width:100%;color:var(--muted2)">💰 = your package price (what you'd charge) — not the client's budget</span>
+    </div>
     ${shown.length ? shown.map(r=>plannerRecRow(r)).join('') : `<div class="empty" style="padding:30px"><div class="empty-icon">🗓️</div><div class="empty-msg">No ${view==='rec'?'recommended ':''}inquiries for ${monthName}.</div></div>`}
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 13px;margin-top:6px;font-size:12px">
       <span>Booked <b style="color:var(--green)">${planMoney(bookedM)}</b></span>
