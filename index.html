@@ -459,8 +459,10 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
     <button class="nav-btn" onclick="showPage('calendar')">Calendar</button>
     <button class="nav-btn" onclick="showPage('settings')">Settings</button>
     <button class="nav-btn" onclick="showPage('gmail')">✉ Gmail</button>
+    <button class="nav-btn" onclick="showPage('guide')">❓ Guide</button>
   </nav>
   <div class="hdr-right">
+    <button class="sync-btn" onclick="openHelp()" title="How this page works" style="padding:6px 11px">?</button>
     <button class="sync-btn" id="syncBtn" onclick="syncData()">↻ Sync Sheet</button>
   </div>
 </header>
@@ -581,6 +583,11 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 
 <!-- Planner + Prospective now live as views INSIDE the Inquiries tab (see #inq-view-switcher) -->
 
+<!-- GUIDE -->
+<div class="page" id="page-guide">
+  <div id="guide-content"></div>
+</div>
+
 <!-- SETTINGS -->
 <div class="page" id="page-settings">
     <div class="card">
@@ -646,6 +653,17 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 <!-- DETAIL OVERLAY -->
 <div class="overlay" id="detailOverlay" onclick="closeDetail(event)">
   <div class="detail-panel" id="detailPanel"></div>
+</div>
+
+<!-- CONTEXTUAL HELP MODAL (the "?" button) -->
+<div id="helpModal" onclick="if(event.target===this)closeHelp()" style="display:none;position:fixed;inset:0;z-index:5000;background:rgba(44,24,16,0.45);align-items:center;justify-content:center;padding:20px">
+  <div id="helpModalBody" style="background:#fff;max-width:560px;width:100%;max-height:80vh;overflow:auto;border-radius:14px;padding:22px 24px;box-shadow:var(--shadow)"></div>
+</div>
+
+<!-- GUIDED TOUR (coachmarks) -->
+<div id="tourLayer" style="display:none;position:fixed;inset:0;z-index:6000;pointer-events:none">
+  <div id="tourSpot" style="position:absolute;border-radius:10px;box-shadow:0 0 0 9999px rgba(44,24,16,0.62);transition:all .25s ease;pointer-events:none"></div>
+  <div id="tourPop" style="position:absolute;max-width:320px;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 8px 30px rgba(44,24,16,0.3);pointer-events:auto"></div>
 </div>
 
 <!-- DRILL-DOWN MODAL -->
@@ -7427,7 +7445,9 @@ async function saveNewEvent() {
 }
 
 function navigate(name) { showPage(name); }
+let currentPageName = 'dashboard';
 function showPage(name) {
+  currentPageName = name;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
@@ -7441,7 +7461,138 @@ function showPage(name) {
   if (name==='calendar') renderCalendar();
   if (name==='settings') renderSettings();
   if (name==='gmail') loadGmail();
+  if (name==='guide') renderGuide();
 }
+
+// ════════════════════════════════ HOW-TO GUIDE + TOUR ════════════════════════════════
+// Single content source — rendered as the full ❓ Guide tab AND surfaced per-page via the "?" button.
+const GUIDE = {
+  dashboard: { icon:'📊', title:'Dashboard', blurb:'Your morning snapshot — money, events, and anything that needs attention today.',
+    points:['The stat cards across the top show booked events, outstanding invoices, revenue, and YTD. Tap any card to see the list behind the number.','“Next 60 Days” lists upcoming events with the assigned shooter.','It pulls from your Google Sheet — hit ↻ Sync (top right) anytime to refresh.'] },
+  inquiries: { icon:'📩', title:'Inquiries', blurb:'Every lead from your inquiry form, scored and sorted so you know who to answer first. This tab has three views — switch them with the buttons at the top.',
+    points:['<b>📋 Inquiries</b> — the lead list. Filter by <b>Needs Response</b> (new), <b>🔔 Follow-ups Due</b>, <b>Active</b>, <b>Archived</b>, or <b>All</b>.','Each card shows a star rating and the reasons behind it. Tap a card to open the full detail, see the score breakdown, and send a reply.','<b>“✓ Responded”</b> marks a lead contacted and starts its follow-up clock (it’ll resurface in 🔔 Follow-ups Due when it’s time to nudge).','<b>📅 Planner</b> and <b>🧮 Prospective</b> are the other two views — see their own guide sections.'] },
+  planner: { icon:'📅', title:'Planner (inside Inquiries)', blurb:'A calendar of your leads so you can plan the year and decide what to take.',
+    points:['Each inquiry sits on its event date, colored by how strong a fit it is (green = recommended, amber = maybe, grey = booked).','A date with two or more leads shows a “⚡” badge — tap it to compare them head-to-head and pick the best one.','Below the calendar is the monthly recommendation list. <b>Recommended</b> shows the best pick per open date; <b>All</b> shows everyone with the reason each didn’t make the cut. The <b>Key</b> explains every label.','<b>✏ Pencil</b> tentatively adds a lead to your plan (counts toward projected revenue, not a real booking). <b>✉</b> drafts a reply.'] },
+  prospective: { icon:'🧮', title:'Prospective (inside Inquiries)', blurb:'A what-if calculator for your year’s revenue.',
+    points:['It starts with what you’ve already booked, then lets you pencil in recommended leads to see your projected total climb toward your goal.','Tick a candidate to pencil it; the projected total, gap-to-goal, and average update live.','Set your annual <b>Goal</b> in the box — it remembers it.','<b>⬇ Build Google Sheet</b> exports this as a standalone Year Planner sheet (for planning away from the dashboard).'] },
+  events: { icon:'🎬', title:'Events', blurb:'Your booked events — the confirmed work.',
+    points:['Lists every booked event with date, client, package, and value.','Tap ✏ to edit, ✕ to delete. The 📋 button opens that event’s deliverables checklist.','Booking an inquiry (from its detail panel) creates the event here automatically.'] },
+  deliverables: { icon:'📦', title:'Deliverables', blurb:'What you owe each client after their event — reels, raws, the planning call.',
+    points:['Check items off as you finish them. Overdue items surface in the 7am phone summary.','Add custom deliverables with the + button; reorder within a phase with ▲▼.'] },
+  financials: { icon:'💰', title:'Financials', blurb:'The money view — revenue, invoices, expenses, and contractor pay.',
+    points:['See gross/net revenue, outstanding invoices (“collect this money”), and what you owe contractors.','Mark invoices paid via the ✏ edit modal’s “Fully Paid?” dropdown.','Expenses and contractor pay have their own sub-sections.'] },
+  contractors: { icon:'👥', title:'Team', blurb:'Your shooters and editors, what they’re owed, and their availability.',
+    points:['Each person shows their assigned events and outstanding pay (YTD and all-time).','“Mark Paid” clears what you owe them.','Availability comes from the team availability page they fill out.'] },
+  calendar: { icon:'🗓️', title:'Calendar', blurb:'Your real Google Calendar synced in, with inquiries overlaid.',
+    points:['Connect Google Calendar once to see your booked dates here.','Toggle “Inquiries” to overlay leads on their dates and spot conflicts.','This is your actual schedule; the Planner (under Inquiries) is for *planning* prospective leads.'] },
+  settings: { icon:'⚙️', title:'Settings', blurb:'Connection settings for the Google Sheet and integrations.',
+    points:['Mostly set-and-forget. The sheet connection is pre-configured.'] },
+  gmail: { icon:'✉️', title:'Gmail', blurb:'Read and reply to inquiry emails without leaving the dashboard.',
+    points:['Shows recent threads; tap one to read and reply. Replies stay threaded.'] }
+};
+const GUIDE_ORDER = ['dashboard','inquiries','planner','prospective','events','deliverables','financials','contractors','calendar','gmail','settings'];
+
+function guideSectionHTML(key){
+  const g = GUIDE[key]; if(!g) return '';
+  return `<div style="margin-bottom:18px">
+    <div style="font-size:16px;font-weight:600;margin-bottom:2px">${g.icon} ${g.title}</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:8px">${g.blurb}</div>
+    <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.7;color:var(--cream)">${g.points.map(p=>`<li>${p}</li>`).join('')}</ul>
+  </div>`;
+}
+function renderGuide(){
+  const el = document.getElementById('guide-content'); if(!el) return;
+  el.innerHTML = `
+  <div style="max-width:720px;margin:0 auto">
+    <div class="card" style="padding:18px 20px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:20px;font-weight:700">👋 Welcome to your dashboard</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px">New here? Take the 60-second walkthrough — it points out each part as you go.</div>
+      </div>
+      <button class="btn btn-gold" onclick="startTour()" style="padding:9px 18px">👋 Take the tour</button>
+    </div>
+    <div style="font-size:13px;color:var(--muted);margin:0 2px 14px">Everything updates from your Google Sheet — tap <b>↻ Sync</b> (top right) to pull the latest. On any tab, the <b>?</b> button (top right) explains just that page.</div>
+    ${GUIDE_ORDER.map(guideSectionHTML).join('')}
+  </div>`;
+}
+
+// Contextual "?" — shows the active page's section in a modal
+function helpKeyForCurrentPage(){
+  if(currentPageName==='inquiries') return (typeof inqView!=='undefined' && inqView!=='list') ? inqView : 'inquiries';
+  if(currentPageName==='guide') return 'dashboard';
+  return currentPageName;
+}
+function openHelp(){
+  const key = helpKeyForCurrentPage();
+  const g = GUIDE[key];
+  const body = document.getElementById('helpModalBody');
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
+      <div style="font-size:18px;font-weight:700">${g?g.icon+' '+g.title:'Help'}</div>
+      <button class="btn btn-outline" onclick="closeHelp()" style="padding:3px 10px;font-size:12px">✕</button>
+    </div>
+    ${g?`<div style="font-size:13px;color:var(--muted);margin-bottom:10px">${g.blurb}</div>
+        <ul style="margin:0 0 14px;padding-left:18px;font-size:13px;line-height:1.7">${g.points.map(p=>`<li>${p}</li>`).join('')}</ul>`:'<div style="color:var(--muted)">No guide for this page yet.</div>'}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:12px">
+      <button class="btn btn-gold" onclick="closeHelp();startTour()" style="font-size:12px">👋 Take the full tour</button>
+      <button class="btn btn-outline" onclick="closeHelp();showPage('guide')" style="font-size:12px">Open full guide</button>
+    </div>`;
+  document.getElementById('helpModal').style.display = 'flex';
+}
+function closeHelp(){ document.getElementById('helpModal').style.display = 'none'; }
+
+// ── Guided tour (coachmarks) ──
+const TOUR = [
+  { page:'dashboard', sel:'.hdr-nav', title:'This is your dashboard', text:'These tabs are your whole business. We’ll walk through the key ones. You can stop anytime with Skip.' },
+  { page:'dashboard', sel:'#dash-content', title:'📊 Daily snapshot', text:'Money, upcoming events, and anything needing attention. Tap any stat card to see the list behind the number.' },
+  { page:'inquiries', view:'list', sel:'#inq-view-switcher', title:'📩 Inquiries', text:'Your leads live here. These three buttons switch between the lead list, the Planner, and the Prospective calculator.' },
+  { page:'inquiries', view:'list', sel:'#inq-content', title:'Who to answer first', text:'Leads are scored into stars with the reasons shown. Tap any lead to see the full breakdown and send a reply. “✓ Responded” starts its follow-up reminder.' },
+  { page:'inquiries', view:'planner', sel:'#planner-content', title:'📅 Planner', text:'Your leads on a calendar. Recommended ones are green; a “⚡” date means several leads want it — tap to compare. The list below recommends the best pick per date.' },
+  { page:'inquiries', view:'prospective', sel:'#prospective-content', title:'🧮 Prospective', text:'A what-if for your year’s revenue. Pencil in recommended leads and watch the projection climb toward your goal.' },
+  { page:'dashboard', sel:'#syncBtn', title:'↻ Keep it fresh', text:'Everything comes from your Google Sheet. Tap Sync to pull the latest inquiries and bookings.' },
+  { page:'dashboard', sel:null, title:'You’re set 🎉', text:'That’s the tour! The ❓ Guide tab has the full manual, and the “?” button (top right) explains whatever page you’re on. Re-take this tour anytime from the Guide tab.' }
+];
+let _tourIdx = 0;
+function startTour(){ _tourIdx = 0; document.getElementById('tourLayer').style.display='block'; tourGo(); }
+function endTour(){ document.getElementById('tourLayer').style.display='none'; }
+function tourGo(){
+  const step = TOUR[_tourIdx]; if(!step){ endTour(); return; }
+  if(step.page && currentPageName!==step.page) showPage(step.page);
+  if(step.page==='inquiries' && step.view) setInqView(step.view);
+  // wait a tick for the page/view to render, then position
+  setTimeout(()=>{
+    const spot = document.getElementById('tourSpot');
+    const pop  = document.getElementById('tourPop');
+    const el = step.sel ? document.querySelector(step.sel) : null;
+    if(el){
+      el.scrollIntoView({block:'center'});           // instant scroll first
+      const r = el.getBoundingClientRect();           // then measure at final position
+      const pad = 6;
+      spot.style.display='block'; pop.style.transform='';
+      spot.style.left = (r.left-pad)+'px'; spot.style.top=(r.top-pad)+'px';
+      spot.style.width=(r.width+pad*2)+'px'; spot.style.height=(r.height+pad*2)+'px';
+      let top = r.bottom+12, left = Math.max(12, Math.min(r.left, window.innerWidth-340));
+      if(top > window.innerHeight-190) top = Math.max(12, r.top-190);
+      pop.style.left=left+'px'; pop.style.top=top+'px';
+    } else {
+      spot.style.display='none';
+      pop.style.left='50%'; pop.style.top='50%'; pop.style.transform='translate(-50%,-50%)';
+    }
+    pop.innerHTML = `
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Step ${_tourIdx+1} of ${TOUR.length}</div>
+      <div style="font-size:15px;font-weight:700;margin-bottom:5px">${step.title}</div>
+      <div style="font-size:13px;color:var(--cream);line-height:1.6;margin-bottom:12px">${step.text}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+        <button class="btn btn-outline" onclick="endTour()" style="font-size:11px;padding:4px 10px">Skip</button>
+        <div style="display:flex;gap:6px">
+          ${_tourIdx>0?`<button class="btn btn-outline" onclick="tourPrev()" style="font-size:11px;padding:4px 10px">Back</button>`:''}
+          <button class="btn btn-gold" onclick="tourNext()" style="font-size:11px;padding:4px 12px">${_tourIdx===TOUR.length-1?'Done':'Next'}</button>
+        </div>
+      </div>`;
+  }, step.page && currentPageName!==step.page ? 220 : 60);
+}
+function tourNext(){ if(_tourIdx>=TOUR.length-1){ endTour(); return; } _tourIdx++; tourGo(); }
+function tourPrev(){ if(_tourIdx>0){ _tourIdx--; tourGo(); } }
 
 // ════════════════════════════════ GMAIL ════════════════════════════════
 const GMAIL_STATE = { threads: [], selected: null };
