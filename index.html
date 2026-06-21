@@ -6296,16 +6296,20 @@ function plannerMonthRows(yr, mo){
   }));
   const byDate = {};
   list.forEach(i=>{ const nd=normalizeDate(i.eventDate); (byDate[nd]=byDate[nd]||[]).push(i); });
+  // "Viable" = could actually be recommended: not auto-declined, not on a booked date, 4★+ or VIP
+  const isViable = x => !(x._avail && x._avail.laurenBooked) && !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 4 || x._isVIP);
   return list.map(i=>{
     const nd = normalizeDate(i.eventDate);
     const sameDate = byDate[nd] || [i];
-    const winner = sameDate.slice().sort((a,b)=>(b._score||0)-(a._score||0))[0];
     const booked   = !!(i._avail && i._avail.laurenBooked);
     const hardFail = !!(i._hardFails && i._hardFails.length);
     const belowBar = (i._stars||0) < 4 && !i._isVIP;
-    const lostDate = sameDate.length>1 && winner.id !== i.id;
-    const rec = !booked && !hardFail && !belowBar && !lostDate;
-    let availTag = booked ? 'booked' : hardFail ? 'fail' : lostDate ? 'lost' : belowBar ? 'low' : sameDate.length>1 ? 'won' : 'open';
+    const viableSelf = !booked && !hardFail && !belowBar;
+    // The date's winner is the best VIABLE inquiry — never a disqualified one
+    const winner = sameDate.filter(isViable).sort((a,b)=>(b._score||0)-(a._score||0))[0] || null;
+    const lostDate = viableSelf && winner && winner.id !== i.id;   // only viable rows can "lose" to a better viable pick
+    const rec = viableSelf && winner && winner.id === i.id;
+    let availTag = booked ? 'booked' : hardFail ? 'fail' : belowBar ? 'low' : lostDate ? 'lost' : (sameDate.filter(isViable).length>1 ? 'won' : 'open');
     return { inq:i, nd, rec, availTag };
   });
 }
@@ -6431,17 +6435,21 @@ function respondToInquiry(id){
 
 // ── Matchup: head-to-head comparison for a contested date ──
 function renderMatchup(ds, inqs){
+  const isViable = x => !(x._avail && x._avail.laurenBooked) && !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 4 || x._isVIP);
   const sorted = inqs.slice().sort((a,b)=>((b._stars||0)-(a._stars||0))||(planPrice(b)-planPrice(a)));
   const dlabel = new Date(ds+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-  const winner = sorted[0];
+  const winner = sorted.filter(isViable).sort((a,b)=>(b._score||0)-(a._score||0))[0] || null;   // best VIABLE one, or none
+  const subtitle = winner
+    ? 'The recommended pick is highlighted — pencil it, pass the rest.'
+    : 'None of these clear the bar — each is auto-declined or below ★★★★ (reason on every card). No recommended pick for this date.';
   return `<div class="card" style="margin-top:14px;padding:14px 16px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
       <div style="font-weight:600">⚡ ${sorted.length} inquiries want ${dlabel}</div>
       <button class="btn btn-outline" onclick="plannerOpenDay=null;renderPlanner()" style="padding:2px 9px;font-size:11px">✕ Close</button>
     </div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Recommended pick is highlighted — pencil the winner, pass the rest.</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${subtitle}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
-      ${sorted.map(inq=>renderMatchupCard(inq, inq.id===winner.id)).join('')}
+      ${sorted.map(inq=>renderMatchupCard(inq, !!winner && inq.id===winner.id)).join('')}
     </div>
   </div>`;
 }
