@@ -1219,7 +1219,7 @@ async function syncData() {
   } catch(e) { window._silentCalSync = false; console.warn('OAuth calendar sync skipped:', e.message); }
 
   // 4. Resolve real venue distances (Google Maps, server-side + cached) before scoring.
-  //    Falls back to keyword guessing if no MAPS_API_KEY is set.
+  //    Falls back to keyword guessing if no LOCATIONIQ_KEY is set.
   await resolveVenueDistances();
 
   // 5. Re-score all inquiries
@@ -1476,7 +1476,7 @@ function parseBudget(str) {
 }
 
 // Ask the backend to geocode any venues we haven't resolved yet (cached server-side + locally).
-// No-op / falls back to keyword guessing if MAPS_API_KEY isn't set in Apps Script.
+// No-op / falls back to keyword guessing if LOCATIONIQ_KEY isn't set in Apps Script.
 async function resolveVenueDistances(){
   try {
     const locs = [...new Set((DATA.inquiries||[]).map(i=>(i.location||'').trim()).filter(Boolean))]
