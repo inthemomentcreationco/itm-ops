@@ -1,4 +1,4 @@
-<!-- v12 -->
+<!-- VERSION: 2026-06-23-a  (LocationIQ geocoding · travel=25mpg gas · planner+prospective nested · how-to guide) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1528,24 +1528,25 @@ function estimateMiles(loc) {
   return 25;
 }
 
-// Travel estimate — Lauren rents a car ($40/day) and drives; gas ~$4.50/gal at ~28mpg.
-// Amtrak isn't used when it's driveable. 3+ hour drives need a hotel; only truly far events fly.
+// Travel estimate — Lauren rents a car ($40/day; the rental covers the vehicle) and pays for gas
+// (~$4.50/gal, ~25 mpg). Shown as one combined drive cost = rental + gas. 3+ hr drives add a hotel.
 function getTravelInfo(miles, hours) {
-  const GAS = 4.50, MPG = 28, CAR = 40;
+  const GAS = 4.50, MPG = 25, CAR = 40;
   if (hours == null) hours = miles / 55;                 // ~55 mph average if drive time unknown
   const gas = Math.round((miles * 2 / MPG) * GAS);       // round-trip gas
   const hrStr = Math.round(hours * 10) / 10;
   let category, options, feeMin, feeMax, feeNote;
   if (miles < 15) {
     category='local'; feeMin=0; feeMax=0; feeNote='Local — no travel fee';
-    options=[{icon:'🚗',name:'Drive',detail:'Local',cost:'~$'+Math.max(gas,8)+' gas'}];
+    options=[{icon:'🚗',name:'Drive',detail:'Local',cost:'~$'+Math.max(gas,10)+' gas'}];
   } else if (hours < 3) {
-    const base = CAR + gas;
-    category='day trip'; feeMin=Math.round(base*0.9); feeMax=Math.round(base*1.4); feeNote=`${hrStr}hr drive — day trip`;
-    options=[{icon:'🚗',name:'Rental car (1 day)',detail:'$40/day + gas',cost:`$${CAR} + ~$${gas} gas`}];
+    const drive = CAR + gas;                              // 1-day rental + gas
+    category='day trip'; feeMin=Math.round(drive*0.9); feeMax=Math.round(drive*1.4); feeNote=`${hrStr}hr drive — day trip`;
+    options=[{icon:'🚗',name:'Rental + gas (day trip)',detail:`$40 rental + ~$${gas} gas`,cost:`~$${drive}`}];
   } else if (miles < 800) {
-    category='overnight drive'; feeMin=CAR*2+gas+150; feeMax=CAR*2+gas+300; feeNote=`${hrStr}hr drive — needs an overnight`;
-    options=[{icon:'🚗',name:'Rental car (2 days)',detail:'$80 + gas',cost:`$80 + ~$${gas} gas`},{icon:'🏨',name:'Hotel (1 night)',detail:'3+ hr away',cost:'$150–$300'}];
+    const drive = CAR*2 + gas;                            // 2-day rental + gas
+    category='overnight drive'; feeMin=drive+150; feeMax=drive+300; feeNote=`${hrStr}hr drive — needs an overnight`;
+    options=[{icon:'🚗',name:'Rental + gas (2 days)',detail:`$80 rental + ~$${gas} gas`,cost:`~$${drive}`},{icon:'🏨',name:'Hotel (1 night)',detail:'3+ hr away',cost:'$150–$300'}];
   } else {
     category='destination'; feeMin=600; feeMax=1400; feeNote='Too far to drive — flight + hotel';
     options=[{icon:'✈️',name:'Flight (round trip)',detail:`${Math.round(miles/500)}+ hr away`,cost:miles>3000?'$450–$1,000':'$220–$550'},{icon:'🏨',name:'Hotel (1–2 nights)',detail:'Required',cost:'$150–$300/night'}];
