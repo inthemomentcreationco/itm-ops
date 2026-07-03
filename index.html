@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-03-b  (Month Game Plan + calendar "Plan only" view · reply draft queue · list dedupe) -->
+<!-- VERSION: 2026-07-03-e  (review-ask engine · booked-via-dashboard no longer double-counts vs HoneyBook) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1268,6 +1268,7 @@ async function syncData() {
         deposit:       parseFloat(r.deposit) || ((parseFloat(r.grossAmount)||0) - (parseFloat(r.balanceDue)||0)) || 0,
         planningCall:  r.planningCall,
         deliverables:  r.deliverables||'',
+        reviewAsked:   String(r.reviewAsked||''),
       }));
       localStorage.setItem('itm_historical', JSON.stringify(DATA.historicalEvents));
     }
@@ -2021,9 +2022,15 @@ function _renderDashboard() {
   const lastMonthRev  = lastMonthRows.reduce((s,r) => s + (r.grossAmount||0), 0);
   const momChange     = lastMonthRev > 0 ? ((thisMonthRev - lastMonthRev) / lastMonthRev * 100) : null;
 
-  // Outstanding invoices — read from historicalEvents (source of truth for balances)
+  // Outstanding invoices — read from historicalEvents (source of truth for balances).
+  // PAST events only: a balance isn't "collect this money" until the event has happened
+  // (final payment is due at the event). Dateless rows stay visible — can't prove they're future.
   const unpaidInvoices = (DATA.historicalEvents||[])
-    .filter(r => !r.paid && (parseFloat(r.balanceDue)||0) > 0)
+    .filter(r => {
+      if (r.paid || (parseFloat(r.balanceDue)||0) <= 0) return false;
+      const d = r.date || r.eventDate || '';
+      return !d || d < todayStr;
+    })
     .sort((a,b) => (a.date||'').localeCompare(b.date||''));
   const totalOwedToLauren = unpaidInvoices.reduce((s,r) => s + (parseFloat(r.balanceDue)||0), 0);
 
@@ -2185,6 +2192,9 @@ function _renderDashboard() {
       }).join('')}
       ${unpaidInvoices.length > 5 ? `<div style="padding:8px 16px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--border);cursor:pointer" onclick="navigate('financials')">+ ${unpaidInvoices.length - 5} more → view in Financials</div>` : ''}
     </div>` : ''}
+
+    <!-- REVIEW ASKS -->
+    ${renderReviewAsks()}
 
     <!-- NEEDS RESPONSE -->
     ${needsResponse.length ? `
@@ -2751,12 +2761,38 @@ function copyEmail(id) {
 
 const PRICING_LINK = 'https://drive.google.com/open?id=1I9vrcjmBaQzDyirtlNUbQ7VDwi_mMd5L';
 const REPLY_SUBJECT = 'Re: Your Inquiry — In The Moment';
+
+// How long ago did this person inquire? Replying weeks late without acknowledging
+// it is rude — past LATE_REPLY_DAYS the templates switch to an apology variant.
+const LATE_REPLY_DAYS = 14;
+function inqAgeDays(inq){
+  const t = inq && inq.timestamp ? new Date(inq.timestamp) : null;
+  if(!t || isNaN(t.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - t.getTime())/86400000));
+}
+function inqAgeLabel(inq){
+  const d = inqAgeDays(inq);
+  if(d===null) return '';
+  if(d===0) return 'today';
+  if(d<7)  return d+'d ago';
+  if(d<60) return Math.round(d/7)+'w ago';
+  return Math.round(d/30)+'mo ago';
+}
+function isLateReply(inq){ const d = inqAgeDays(inq); return d!==null && d > LATE_REPLY_DAYS; }
+
 // Lauren's standard replies — shared by the detail panel templates AND the
 // Month Game Plan draft queue, so the wording only lives in one place.
-function tmplDecline(firstName) {
-  return "Hi " + firstName + "!\n\nThank you so much for thinking of us, it truly means the world! Unfortunately, our team is fully booked for your date and won't be able to make it work this time around.\n\nWe hope you find an amazing fit and wish you all the best as you plan! If you ever have a future date you'd like to connect on, we would love to be considered — please don't hesitate to reach out anytime!\n\nWishing you all the best!\nXoxo, Lauren";
+// Pass late=true to lead with an apology for the slow response.
+function tmplDecline(firstName, late) {
+  const opener = late
+    ? "First, I owe you an apology for the slow reply — this season has been a complete whirlwind of back-to-back events and your inquiry got buried while we were out shooting. "
+    : "";
+  return "Hi " + firstName + "!\n\n" + opener + "Thank you so much for thinking of us, it truly means the world! Unfortunately, our team is fully booked for your date and won't be able to make it work this time around.\n\nWe hope you find an amazing fit and wish you all the best as you plan! If you ever have a future date you'd like to connect on, we would love to be considered — please don't hesitate to reach out anytime!\n\nWishing you all the best!\nXoxo, Lauren";
 }
-function tmplAvailable(firstName) {
+function tmplAvailable(firstName, late) {
+  if (late) {
+    return "Hi " + firstName + "!\n\nFirst — I'm so sorry for the delayed reply! This season has been a complete whirlwind of back-to-back events and your inquiry got buried while we were out shooting. If you're still looking, I'd love to make it up to you — we ARE available for your date and would be so excited to be a part of your special day!\n\nIn the below link you'll find our current packages and pricing. Please take a look and don't hesitate to reach out with any questions — I'm also happy to hop on a quick call to walk you through everything and chat more details!\n\nHoping to hear from you!\n\nITM Packages & Pricing 2026\n" + PRICING_LINK + "\n\nXoxo Lauren";
+  }
   return "Hi " + firstName + "!\n\nThank you so much for reaching out — we would absolutely love to be a part of your special day! I'm happy to share that we are available for your date and cannot wait to hear more about your vision!\n\nIn the below link you'll find our current packages and pricing. Please take a look and don't hesitate to reach out with any questions — I'm also happy to hop on a quick call to walk you through everything and chat more details!\n\nLooking forward to connecting soon!\n\nITM Packages & Pricing 2026\n" + PRICING_LINK + "\n\nXoxo Lauren";
 }
 function fillTemplate(id, type) {
@@ -2766,7 +2802,8 @@ function fillTemplate(id, type) {
   const bodyEl = document.getElementById('email-body-'+id);
   const subjEl = document.getElementById('email-subj-'+id);
   if (!bodyEl) return;
-  bodyEl.value = (type === 'booked') ? tmplDecline(firstName) : tmplAvailable(firstName);
+  const late = isLateReply(inq);
+  bodyEl.value = (type === 'booked') ? tmplDecline(firstName, late) : tmplAvailable(firstName, late);
   if (subjEl) subjEl.textContent = 'Subject: ' + REPLY_SUBJECT;
 }
 async function aiDraftEmail(id) {
@@ -2887,42 +2924,19 @@ async function bookInquiry(id) {
     notes:         '',
   };
 
-  // Also create the ITM_Financials row so the booking shows up in invoices,
-  // revenue, and the merged Events view (same dual-write as saveNewEvent).
-  // saveFinancial requires a date, so skip it for date-TBD inquiries.
-  const finDate = normalizeDate(inq.eventDate) || '';
-  const fin = {
-    id:          event.id,
-    date:        finDate,
-    client:      inq.name,
-    eventType:   inq.eventType || '',
-    package:     inq.package || '',
-    packageHours: hours,
-    grossAmount: event.contractValue,
-    hbFees:      0,
-    travelFee:   0,
-    deposit:     0,
-    balanceDue:  event.contractValue,
-    paid:        false,
-    source:      'manual',
-    notes:       '',
-  };
-
-  // Save to Apps Script / Google Sheet
+  // Deliberately NO ITM_Financials row here: HoneyBook is the money source of truth
+  // (revenue only counts once the deposit is paid and the HB payments/projects report
+  // is uploaded, which creates the hb_ row). Writing a financials row at "book" time
+  // double-counted the event once the HB upload arrived. The calendar/Events row below
+  // is enough — getMergedEvents hides it automatically when the matching hb_ row lands.
   try {
-    const saves = [apiCall('saveEvent', event)];
-    if (finDate) saves.push(apiCall('saveFinancial', fin));
-    await Promise.all(saves);
-    toast('Event saved to Google Sheet ✓');
+    await apiCall('saveEvent', event);
+    toast('Event saved to Google Sheet ✓ (revenue counts once the HoneyBook deposit report is uploaded)');
   } catch(e) {
     toast('Warning: could not save event to sheet. ' + e.message);
   }
 
   DATA.events.push(event);
-  if (finDate) {
-    DATA.historicalEvents = DATA.historicalEvents || [];
-    DATA.historicalEvents.push({ ...fin, contractValue: fin.grossAmount, netRevenue: fin.grossAmount });
-  }
   inq.stage = 'booked';
 
   // Also mark stage in the inquiry sheet
@@ -3447,9 +3461,15 @@ function renderFinancials() {
   const eventCount = yearRows.length;
   const onTrack    = grossRev >= (FIN.revenueGoal * (today.getMonth()+1) / 12);
 
-  // ── OUTSTANDING INVOICES ──
+  // ── OUTSTANDING INVOICES — past events only (balance is due AT the event; a future
+  // event's balance isn't outstanding yet). Dateless rows stay visible.
+  const todayISO = new Date().toISOString().split('T')[0];
   const unpaidRows = allRows
-    .filter(r => !r.paid && (r.balanceDue||0) > 0)
+    .filter(r => {
+      if (r.paid || (r.balanceDue||0) <= 0) return false;
+      const d = r.date || r.eventDate || '';
+      return !d || d < todayISO;
+    })
     .sort((a,b) => (a.date||a.eventDate||'').localeCompare(b.date||b.eventDate||''));
   const totalOwed  = unpaidRows.reduce((s,r) => s+(r.balanceDue||0), 0);
 
@@ -3621,7 +3641,7 @@ function renderFinInvoices(unpaidRows, allRows, thisYear) {
               ${daysAgo===null?'—':daysAgo===0?'Today':daysAgo>0?daysAgo+' days ago':Math.abs(daysAgo)+' days away'}
             </td>
             <td style="display:flex;gap:6px;flex-wrap:wrap">
-              ${r._live ? `<button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="markInvoicePaid('${r.id}')">Mark Paid</button>` : ''}
+              <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="markInvoicePaid('${r.id}')">Mark Paid</button>
               <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
             </td>
           </tr>`;
@@ -3630,7 +3650,7 @@ function renderFinInvoices(unpaidRows, allRows, thisYear) {
     </table>
   </div>
   <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;font-size:12px;color:var(--muted2)">
-    Showing all ${unpaidRows.length} outstanding invoices across all years. Live events can be marked paid; HoneyBook historical records are read-only.
+    Showing ${unpaidRows.length} unpaid invoice${unpaidRows.length!==1?'s':''} for events that have already happened. Future events' balances aren't listed here — they're due at the event and show on the event itself until then. "Mark Paid" saves permanently (survives sync).
   </div>`;
 }
 
@@ -4778,17 +4798,116 @@ function renderFinImport(allHist) {
 }
 
 async function markInvoicePaid(eventId) {
-  const ev = DATA.events.find(e => e.id === eventId);
-  if (!ev) return;
-  if (!confirm(`Mark ${ev.client} as fully paid?`)) return;
-  ev.balance = 0;
-  ev.status  = 'completed';
+  // The Collect/Outstanding lists read paid+balanceDue from ITM_Financials — so THAT
+  // sheet must be updated or "paid" reverts on every sync (the old version only wrote
+  // ITM_Events, which is why marked invoices kept coming back).
+  const hist = (DATA.historicalEvents||[]).find(r => r.id === eventId);
+  const live = (DATA.events||[]).find(e => e.id === eventId);
+  if (!hist && !live) { toast('⚠ Record not found'); return; }
+  const client = (hist && hist.client) || (live && live.client) || 'this client';
+  if (!confirm(`Mark ${client} as fully paid?`)) return;
+  if (hist && !hist.date) { toast('⚠ This record has no event date — add one via ✏ Edit first, then mark paid'); return; }
   try {
-    await apiCall('saveEvent', ev);
-    toast(`✓ ${ev.client} marked as fully paid`);
+    if (hist) {
+      hist.paid = true;
+      hist.balanceDue = 0;
+      await apiCall('saveFinancial', Object.assign({}, hist, { paid: true, balanceDue: 0 }));
+    }
+    if (live) {
+      live.balance = 0;
+      live.status  = 'completed';
+      await apiCall('saveEvent', live);
+    }
+    toast(`✓ ${client} marked as fully paid`);
     renderFinancials();
     renderDashboard();
   } catch(e) { toast('Error saving: ' + e.message); }
+}
+
+// ── REVIEW ASKS — turn delivered events into public reviews ──
+// Past events (last 120 days) with no review request yet surface on the Dashboard;
+// one click sends Lauren's ask with her Google review link (CFG.reviewLink).
+// Sent-state persists in a reviewAsked column on ITM_Financials (setFinancialFlag);
+// events not in Financials yet fall back to a local record.
+function tmplReviewAsk(firstName, link) {
+  return "Hi " + firstName + "!\n\nIt was such an honor being a part of your day — we truly loved every minute of it! 💛\n\nIf you have two minutes, a quick review would mean the absolute world to us. It's the single biggest way a small business like ours grows:\n\n" + link + "\n\nThank you so much again — and if you ever need content for another event (or know someone who does!), you know exactly where to find us!\n\nXoxo, Lauren\nIn The Moment";
+}
+function _reviewLocalMap(){ try { return JSON.parse(localStorage.getItem('itm_review_asked')||'{}'); } catch(e){ return {}; } }
+function setReviewLink(v){ CFG.reviewLink = String(v||'').trim(); saveCfg(); }
+function reviewAskRows(){
+  const todayStr = new Date().toISOString().split('T')[0];
+  const cutoff   = new Date(Date.now() - 120*86400000).toISOString().split('T')[0];
+  const local    = _reviewLocalMap();
+  const inqs     = DATA.inquiries||[];
+  const emailFor = client => {
+    const c = String(client||'').toLowerCase().trim(); if(!c) return '';
+    const cFirst = c.split(/[&,]/)[0].trim();
+    const hit = inqs.find(i => { const ic = String(i.name||'').toLowerCase().trim(); return ic && (ic.includes(cFirst) || c.includes(ic.split(/[&,]/)[0].trim())); });
+    return (hit && hit.email) || '';
+  };
+  return getMergedEvents()
+    .filter(r => {
+      const d = r.date||r.eventDate||'';
+      if(!d || d >= todayStr || d < cutoff) return false;
+      if(r.reviewAsked || local[r.id]) return false;
+      if(typeof isSMM === 'function' && isSMM(r)) return false;
+      return true;
+    })
+    .map(r => ({ ev: r, email: r.email || emailFor(r.client) }))
+    .sort((a,b) => (b.ev.date||'').localeCompare(a.ev.date||''));
+}
+async function markReviewAsked(ev){
+  ev.reviewAsked = new Date().toISOString();
+  if((DATA.historicalEvents||[]).some(r => r.id === ev.id)){
+    try { await apiCall('setFinancialFlag', { id: ev.id, field: 'reviewAsked' }); return; } catch(e){ /* fall back to local */ }
+  }
+  const m = _reviewLocalMap(); m[ev.id] = 1; localStorage.setItem('itm_review_asked', JSON.stringify(m));
+}
+async function sendReviewAsk(id){
+  const x = reviewAskRows().find(v => v.ev.id === id);
+  if(!x) return;
+  const link = (CFG.reviewLink||'').trim();
+  if(!link){ toast('⚠ Paste your Google review link into the section header first'); return; }
+  if(!x.email){ toast('⚠ No email on file for ' + (x.ev.client||'this client') + ' — ask by text instead, then click ✕ to clear it'); return; }
+  const first = String(x.ev.client||'there').split(/[\s&,]/)[0];
+  if(!confirm(`Send a review request to ${x.ev.client} at ${x.email}?`)) return;
+  try {
+    const result = await apiCall('sendEmail', { to: x.email, subject: 'A little favor? 💛 — In The Moment', body: tmplReviewAsk(first, link) });
+    if(!(result && result.sent)) throw new Error('unexpected response');
+    await markReviewAsked(x.ev);
+    toast('✓ Review request sent to ' + x.ev.client);
+    renderDashboard();
+  } catch(e){ toast('⚠ Send failed: ' + (e.message||e)); }
+}
+function skipReviewAsk(id){
+  const ev = getMergedEvents().find(r => r.id === id);
+  if(!ev) return;
+  markReviewAsked(ev).then(() => renderDashboard());
+}
+function renderReviewAsks(){
+  const rows = reviewAskRows();
+  if(!rows.length) return '';
+  const link = (CFG.reviewLink||'').trim();
+  return `
+    <div class="sec-label">⭐ Ask for Reviews</div>
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);flex-wrap:wrap">
+        <span style="white-space:nowrap">Recent events, no review asked yet. Google review link:</span>
+        <input type="text" value="${escHtml(link)}" placeholder="paste your Google review URL here once" onchange="setReviewLink(this.value);renderDashboard()" style="flex:1;min-width:170px;padding:3px 8px;font-size:11px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">
+      </div>
+      ${rows.slice(0,5).map((x,i) => {
+        const d = x.ev.date||x.ev.eventDate||'';
+        return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;${i>0?'border-top:1px solid var(--border)':''}">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:500;color:var(--cream);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(x.ev.client||'—')}</div>
+            <div style="font-size:11px;color:var(--muted2)">${x.ev.eventType||'Event'}${d?' · '+new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}):''} · ${x.email?escHtml(x.email):'⚠ no email — ask by text'}</div>
+          </div>
+          <button class="btn btn-gold" style="font-size:11px;padding:4px 11px;${(!x.email||!link)?'opacity:.5':''}" onclick="sendReviewAsk('${x.ev.id}')">✉ Ask</button>
+          <button class="btn btn-outline" style="font-size:11px;padding:4px 9px" onclick="skipReviewAsk('${x.ev.id}')" title="Clear without sending (asked another way / skip)">✕</button>
+        </div>`;
+      }).join('')}
+      ${rows.length > 5 ? `<div style="padding:8px 16px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--border)">+ ${rows.length-5} more once these are handled</div>` : ''}
+    </div>`;
 }
 
 function markNoCharge(overrideKey) {
@@ -6409,6 +6528,10 @@ function recChips(inq){
   const C = { def:{bg:'var(--s2)',fg:'var(--muted)'}, gold:{bg:'var(--goldbg)',fg:'var(--gold)'}, grn:{bg:'var(--greenbg)',fg:'var(--green)'}, red:{bg:'var(--redbg)',fg:'var(--red)'} };
   const out = [];
   out.push(Object.assign({t:'💰 '+planMoney(planPrice(inq))}, C.def));
+  const ageD = inqAgeDays(inq);
+  if(ageD!==null) out.push(ageD>45 ? {t:'🕐 inquired '+inqAgeLabel(inq), bg:'var(--redbg)', fg:'var(--red)'}
+                        : ageD>LATE_REPLY_DAYS ? {t:'🕐 inquired '+inqAgeLabel(inq), bg:'var(--amberbg)', fg:'var(--amber)'}
+                        : Object.assign({t:'🕐 '+inqAgeLabel(inq)}, C.def));
   if(inq._miles!=null) out.push(Object.assign({t:'📍 '+inq._miles+'mi'}, C.def));
   if(inq._isVIPPlanner)        out.push(Object.assign({t:'👑 VIP planner'}, C.gold));
   else if(inq._isRepeatClient) out.push(Object.assign({t:'🔄 repeat'}, C.gold));
@@ -6531,6 +6654,22 @@ function setMonthGoal(v){
   if(planCurrent) planCurrent = buildMonthPlan(plannerYear, plannerMonth);
   renderPlanner();
 }
+// Plan mode: fill the month toward a $ goal (default) or toward a # of events —
+// "leave no weekend empty" months vs "hit the number" months.
+function planMode(){ return CFG.planMode==='count' ? 'count' : 'money'; }
+function setPlanMode(m){
+  CFG.planMode = m==='count' ? 'count' : 'money';
+  saveCfg();
+  if(planCurrent) planCurrent = buildMonthPlan(plannerYear, plannerMonth);
+  renderPlanner();
+}
+function monthEventTarget(){ return Math.max(1, parseInt(CFG.monthlyEvents)||6); }
+function setMonthEventTarget(v){
+  CFG.monthlyEvents = Math.max(1, parseInt(String(v).replace(/[^0-9]/g,''))||6);
+  saveCfg();
+  if(planCurrent) planCurrent = buildMonthPlan(plannerYear, plannerMonth);
+  renderPlanner();
+}
 
 // How many events can the team physically cover on a date?
 // = shooters who are available or on hold; if nobody has data, assume 1.
@@ -6548,9 +6687,12 @@ function buildMonthPlan(yr, mo){
   const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
   const rows = plannerMonthRows(yr, mo).filter(r=>r.nd && r.nd >= todayStr && !isPassed(r.inq));
   const viable = rows.filter(r=>r.rec);
-  const bookedM = getMergedEvents().filter(e=>{ const dd=(e.date||e.eventDate||''); return dd.slice(0,7)===pfx; })
-                    .reduce((s,e)=>s+(e.contractValue||e.grossAmount||0),0);
+  const bookedEvts = getMergedEvents().filter(e=>{ const dd=(e.date||e.eventDate||''); return dd.slice(0,7)===pfx; });
+  const bookedM = bookedEvts.reduce((s,e)=>s+(e.contractValue||e.grossAmount||0),0);
+  const bookedN = bookedEvts.length;
+  const mode = planMode();
   const goal = monthGoal();
+  const targetN = monthEventTarget();
   const cap = {}, used = {};
   viable.forEach(r=>{ if(!(r.nd in cap)) cap[r.nd] = dateCapacity(r.nd); });
   // Priority: locked pencils → VIP/50K+ → everyone else; then $ desc, then score.
@@ -6566,14 +6708,15 @@ function buildMonthPlan(yr, mo){
     if(used[r.nd] >= (cap[r.nd] ?? 1)){
       skips.push({r, why:`date full — ${cap[r.nd]||0} shooter${(cap[r.nd]||0)===1?'':'s'} free that day`}); return;
     }
-    if(!locked && !vip && (bookedM + sum) >= goal){ skips.push({r, why:'monthly goal already met'}); return; }
+    const goalMet = mode==='count' ? (bookedN + picks.length) >= targetN : (bookedM + sum) >= goal;
+    if(!locked && !vip && goalMet){ skips.push({r, why: mode==='count' ? 'event target already met' : 'monthly $ goal already met'}); return; }
     used[r.nd]++; sum += price;
     const fc = r.inq._followerCount||0;
     picks.push({ r, why: locked ? 'already penciled'
                        : vip ? (fc>=50000 ? Math.round(fc/1000)+'K reach — always take' : 'VIP — always take')
                        : 'best $ for the date' });
   });
-  return { key:pfx, picks, skips, goal, bookedM, sum, projected: bookedM+sum };
+  return { key:pfx, picks, skips, goal, bookedM, sum, projected: bookedM+sum, mode, bookedN, targetN };
 }
 
 function suggestPlan(){ planManualExcl.clear(); planCurrent = buildMonthPlan(plannerYear, plannerMonth); planQueue = null; renderPlanner(); }
@@ -6607,9 +6750,10 @@ function buildPlanQueue(){
     if(inq.stage !== 'new') return;              // already in conversation / decided — don't blast them
     seen.add(rid);
     const first = (inq.name||'there').split(' ')[0];
+    const late = isLateReply(inq);
     q.push({ rid, email: inq.email, name: inq.name||'(no name)', kind,
-             subject: REPLY_SUBJECT,
-             body: kind==='accept' ? tmplAvailable(first) : tmplDecline(first),
+             subject: REPLY_SUBJECT, late, age: inqAgeLabel(inq),
+             body: kind==='accept' ? tmplAvailable(first, late) : tmplDecline(first, late),
              sent: false, sending: false });
   };
   planCurrent.picks.forEach(p=>push(p.r.inq,'accept'));
@@ -6658,6 +6802,7 @@ function planPickRow(p, picked){
   return `<div style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-top:1px solid var(--border);${picked?'':'opacity:.62'}">
     <span style="flex:none;width:86px;font-size:11px;color:var(--muted)">${dstr}</span>
     <span style="flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer" onclick="openDetail('${inq.id}')">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;letter-spacing:-1px;color:var(--muted)">${'★'.repeat(inq._stars||0)}</span>${fc>=50000?' <span style="font-size:10px;color:var(--gold);font-weight:700">⚡'+Math.round(fc/1000)+'K</span>':''}</span>
+    ${inqAgeDays(inq)!==null?`<span style="flex:none;font-size:10px;white-space:nowrap;color:${inqAgeDays(inq)>45?'var(--red)':inqAgeDays(inq)>LATE_REPLY_DAYS?'var(--amber)':'var(--muted2)'}">🕐 ${inqAgeLabel(inq)}</span>`:''}
     <span style="flex:none;font-size:10px;color:var(--muted2);white-space:nowrap">${escHtml(p.why)}</span>
     <span style="flex:none;font-size:13px;font-weight:700;width:56px;text-align:right">${planMoney(planPrice(inq))}</span>
     <button class="btn btn-outline" style="flex:none;font-size:11px;padding:3px 8px" onclick="planExclToggle(${inq._rowIndex})" title="${picked?'Remove from plan':'Put back in plan'}">${picked?'✕':'↩'}</button>
@@ -6668,36 +6813,61 @@ function planPanel(yr, mo){
   const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
   if(planCurrent && planCurrent.key !== pfx){ planCurrent = null; planQueue = null; planManualExcl.clear(); }
   const monthName = new Date(yr,mo,1).toLocaleDateString('en-US',{month:'long'});
-  const goalInput = `<span style="font-size:11px;color:var(--muted)">Monthly goal $</span><input type="number" value="${monthGoal()}" onchange="setMonthGoal(this.value)" style="width:78px;padding:3px 6px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">`;
+  const mode = planMode();
+  const modeToggle = `<span style="display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden">
+    <button onclick="setPlanMode('money')" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${mode==='money'?'var(--gold)':'transparent'};color:${mode==='money'?'#fff':'var(--muted)'}">$ goal</button>
+    <button onclick="setPlanMode('count')" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${mode==='count'?'var(--gold)':'transparent'};color:${mode==='count'?'#fff':'var(--muted)'}"># events</button>
+  </span>`;
+  const targetInput = mode==='money'
+    ? `<span style="font-size:11px;color:var(--muted)">Monthly goal $</span><input type="number" value="${monthGoal()}" onchange="setMonthGoal(this.value)" style="width:78px;padding:3px 6px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">`
+    : `<span style="font-size:11px;color:var(--muted)">Events this month</span><input type="number" min="1" value="${monthEventTarget()}" onchange="setMonthEventTarget(this.value)" style="width:52px;padding:3px 6px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">`;
   if(!planCurrent){
     return `<div class="card" style="margin-top:16px;padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <span style="font-size:13px"><b>🎯 ${monthName} game plan</b> — fill the month toward the goal: highest $ first, VIP &amp; 50K+ always in, dates share only when shooters are free.</span>
-      ${goalInput}
+      <span style="font-size:13px"><b>🎯 ${monthName} game plan</b> — ${mode==='money'?'fill the month toward the $ goal':'fill the month up to the event count (booked events count toward it)'}: highest $ first, VIP &amp; 50K+ always in, dates share only when shooters are free.</span>
+      ${modeToggle}
+      ${targetInput}
       <button class="btn btn-gold" style="padding:6px 14px;font-size:12px" onclick="suggestPlan()">Suggest plan</button>
     </div>`;
   }
   const P = planCurrent;
-  const scale = Math.max(P.goal, P.projected)*1.08 || 1;
-  const nQ = P.picks.filter(p=>p.r.inq.stage==='new' && p.r.inq.email).length;
+  const totalN = P.bookedN + P.picks.length;
+  const headline = P.mode==='count'
+    ? `take ${P.picks.length} → ${totalN} of ${P.targetN} events (${planMoney(P.projected)})`
+    : `take ${P.picks.length}, ${planMoney(P.projected)} projected`;
+  const scale  = Math.max(P.goal, P.projected)*1.08 || 1;
+  const scaleN = Math.max(P.targetN, totalN)*1.08 || 1;
+  const bar = P.mode==='count'
+    ? `<div style="height:16px;border-radius:6px;background:var(--s2);display:flex;overflow:hidden;position:relative;margin-bottom:4px">
+        <div style="width:${P.bookedN/scaleN*100}%;background:var(--green);opacity:.85"></div>
+        <div style="width:${P.picks.length/scaleN*100}%;background:rgba(139,26,26,0.18);border-left:2px solid var(--gold)"></div>
+        <div style="position:absolute;top:-2px;bottom:-2px;left:${P.targetN/scaleN*100}%;width:2px;background:var(--cream)"></div>
+      </div>
+      <div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-bottom:6px">
+        <span><b style="color:var(--green)">${P.bookedN}</b> booked</span>
+        <span><b style="color:var(--gold)">${P.picks.length}</b> this plan</span>
+        <span><b>${P.targetN}</b> target ${totalN>=P.targetN?'✓':`(${P.targetN-totalN} short — that's every viable lead)`}</span>
+      </div>`
+    : `<div style="height:16px;border-radius:6px;background:var(--s2);display:flex;overflow:hidden;position:relative;margin-bottom:4px">
+        <div style="width:${P.bookedM/scale*100}%;background:var(--green);opacity:.85"></div>
+        <div style="width:${P.sum/scale*100}%;background:rgba(139,26,26,0.18);border-left:2px solid var(--gold)"></div>
+        <div style="position:absolute;top:-2px;bottom:-2px;left:${P.goal/scale*100}%;width:2px;background:var(--cream)"></div>
+      </div>
+      <div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-bottom:6px">
+        <span><b style="color:var(--green)">${planMoney(P.bookedM)}</b> booked</span>
+        <span><b style="color:var(--gold)">${planMoney(P.sum)}</b> this plan</span>
+        <span><b>${planMoney(P.goal)}</b> goal ${P.projected>=P.goal?'✓':`(${planMoney(P.goal-P.projected)} short — that's every viable lead)`}</span>
+      </div>`;
   return `<div class="card" style="margin-top:16px;padding:14px 16px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-      <span style="font-size:15px;font-weight:600">🎯 ${monthName} game plan — take ${P.picks.length}, ${planMoney(P.projected)} projected</span>
-      ${goalInput}
+      <span style="font-size:15px;font-weight:600">🎯 ${monthName} game plan — ${headline}</span>
+      ${modeToggle}
+      ${targetInput}
       <span style="margin-left:auto;display:flex;gap:6px">
         <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="suggestPlan()" title="Recompute from scratch">↻</button>
         <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="dismissPlan()">✕</button>
       </span>
     </div>
-    <div style="height:16px;border-radius:6px;background:var(--s2);display:flex;overflow:hidden;position:relative;margin-bottom:4px">
-      <div style="width:${P.bookedM/scale*100}%;background:var(--green);opacity:.85"></div>
-      <div style="width:${P.sum/scale*100}%;background:rgba(139,26,26,0.18);border-left:2px solid var(--gold)"></div>
-      <div style="position:absolute;top:-2px;bottom:-2px;left:${P.goal/scale*100}%;width:2px;background:var(--cream)"></div>
-    </div>
-    <div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-bottom:6px">
-      <span><b style="color:var(--green)">${planMoney(P.bookedM)}</b> booked</span>
-      <span><b style="color:var(--gold)">${planMoney(P.sum)}</b> this plan</span>
-      <span><b>${planMoney(P.goal)}</b> goal ${P.projected>=P.goal?'✓':`(${planMoney(P.goal-P.projected)} short — that's every viable lead)`}</span>
-    </div>
+    ${bar}
     ${P.picks.length ? P.picks.map(p=>planPickRow(p,true)).join('') : '<div style="padding:14px;font-size:12px;color:var(--muted)">No viable future inquiries left this month.</div>'}
     ${P.skips.length ? `<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">${P.skips.length} not in the plan — why</summary>${P.skips.map(s=>planPickRow(s,false)).join('')}</details>` : ''}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
@@ -6719,6 +6889,7 @@ function planQueuePanel(){
       <div style="border:1px solid var(--border);border-radius:9px;padding:8px 11px;margin-bottom:7px;background:${row.sent?'var(--s2)':'#fff'}">
         <div style="display:flex;align-items:center;gap:9px">
           <span style="flex:none;font-size:10px;font-weight:700;padding:2px 8px;border-radius:9px;background:${row.kind==='accept'?'var(--greenbg)':'var(--redbg)'};color:${row.kind==='accept'?'var(--green)':'var(--red)'}">${row.kind==='accept'?'✅ ACCEPT':'✖ DECLINE'}</span>
+          ${row.late?`<span style="flex:none;font-size:10px;font-weight:600;padding:2px 8px;border-radius:9px;background:var(--amberbg);color:var(--amber)" title="They inquired ${escHtml(row.age)} — this draft opens with an apology for the slow reply">🕐 ${escHtml(row.age)} — apology included</span>`:''}
           <span style="flex:1;min-width:0;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="planQueueEdit(${i})">${escHtml(row.name)} <span style="font-weight:400;color:var(--muted)">· ${escHtml(row.email)}</span></span>
           ${row.sent ? `<span style="flex:none;font-size:11px;color:var(--green);font-weight:600">✓ sent</span>`
                      : `<button class="btn btn-gold" style="flex:none;font-size:11px;padding:4px 11px" ${row.sending?'disabled':''} onclick="sendPlanDraft(${i})">${row.sending?'Sending…':'📤 Send'}</button>`}
@@ -6765,6 +6936,7 @@ function renderMatchupCard(inq, isWin){
     ${row('Distance', inq._miles!=null?inq._miles+' mi':'—')}
     ${row('Planner', plannerVal)}
     ${row('Followers', fstr, fc>=50000)}
+    ${row('Inquired', inqAgeLabel(inq)||'—', isLateReply(inq))}
     <button class="btn ${pencil?'btn-gold':'btn-outline'}" onclick="${pencil?'passInq':'pencilIn'}('${inq.id}')" style="width:100%;margin-top:8px;padding:5px;font-size:11px">${pencil?'✓ Penciled':'✏ Pencil in'}</button>
   </div>`;
 }
