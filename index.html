@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-03-e  (review-ask engine · booked-via-dashboard no longer double-counts vs HoneyBook) -->
+<!-- VERSION: 2026-07-03-f  (installable app: PWA tags + icon/manifest · mobile layout pass · cross-device settings sync) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,7 +6,15 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- PWA / add-to-home-screen: full-screen app feel on iOS + Android -->
+<meta name="theme-color" content="#EDE8E0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="ITM Ops">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
 <title>ITM Ops — In The Moment</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400;1,600&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -403,19 +411,32 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 .cal-more{font-size:10px;color:var(--muted);padding:1px 4px;cursor:pointer}
 .cal-more:hover{color:var(--gold)}
 
+/* Installed-app mode: keep the header clear of the iPhone notch/Dynamic Island */
+.hdr{padding-top:env(safe-area-inset-top,0px)}
+body{padding-bottom:env(safe-area-inset-bottom,0px)}
+
 @media(max-width:640px){
-  .hdr{padding:0 14px}
+  .hdr{padding-left:14px;padding-right:14px}
   .hdr-brand{font-size:14px;margin-right:12px;letter-spacing:0.10em}
-  .nav-btn{padding:0 10px;font-size:8.5px}
+  .hdr-nav{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .hdr-nav::-webkit-scrollbar{display:none}
+  .nav-btn{padding:0 10px;font-size:8.5px;white-space:nowrap}
   .page{padding:12px}
   .stats-row{grid-template-columns:1fr 1fr}
   .travel-grid{grid-template-columns:1fr 1fr}
   .form-grid{grid-template-columns:1fr}
   .overlay{padding:8px}
   .detail-panel{max-height:calc(100vh - 16px)}
-  .cal-cell{min-height:60px}
-  .cal-pill{font-size:9px}
+  .cal-cell{min-height:52px;padding:2px}
+  .cal-pill{font-size:8px;padding:1px 3px}
   .cal-dow{font-size:8px}
+  .cal-more{font-size:9px}
+  /* dense flex rows (game plan, rec strip, draft queue) wrap instead of squishing */
+  .rec-row,.plan-row,.pq-head{flex-wrap:wrap;row-gap:6px}
+  /* wide tables scroll sideways instead of breaking the page */
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .tbl{font-size:11px}
+  .tbl th,.tbl td{padding:6px 8px;white-space:nowrap}
 }
 
 /* ── DELIVERABLES TAB ── */
@@ -947,8 +968,38 @@ async function apiCall(action, payload) {
 }
 
 // ════════════════════════════════ PERSIST (config only, no financial data) ════════════════════════════════
+// Settings that should look the same on every device (Hue's Mac, Lauren's phone).
+// Pushed to a Script Property on change, pulled on every sync — last write wins.
+const CFG_SYNC_KEYS = ['revenueGoal','monthlyGoal','monthlyEvents','planMode','reviewLink'];
+let _cfgPushTimer = null;
 function saveCfg() {
   localStorage.setItem('itm_cfg', JSON.stringify(CFG));
+  clearTimeout(_cfgPushTimer);
+  _cfgPushTimer = setTimeout(pushCfgToServer, 1200);
+}
+async function pushCfgToServer(){
+  if(!_secret || !CFG.scriptUrl) return;
+  const cfg = {};
+  CFG_SYNC_KEYS.forEach(k => { if(CFG[k] !== undefined) cfg[k] = CFG[k]; });
+  const updatedAt = Date.now();
+  localStorage.setItem('itm_cfg_ts', String(updatedAt));
+  try { await apiCall('setCfg', { cfg, reviewAsked: _reviewLocalMap(), updatedAt }); } catch(e) { /* offline is fine — next save retries */ }
+}
+async function pullCfgFromServer(){
+  try {
+    const r = await apiCall('getCfg', {});
+    if(!r || !r.updatedAt) return;
+    const localTs = parseInt(localStorage.getItem('itm_cfg_ts')||'0');
+    if(r.updatedAt <= localTs) return;              // this device is newer — keep ours
+    CFG_SYNC_KEYS.forEach(k => { if(r.cfg && r.cfg[k] !== undefined) CFG[k] = r.cfg[k]; });
+    if(r.reviewAsked){
+      const m = _reviewLocalMap();
+      Object.assign(m, r.reviewAsked);
+      localStorage.setItem('itm_review_asked', JSON.stringify(m));
+    }
+    localStorage.setItem('itm_cfg', JSON.stringify(CFG));   // persist without re-triggering a push
+    localStorage.setItem('itm_cfg_ts', String(r.updatedAt));
+  } catch(e) { /* older backend without getCfg — harmless */ }
 }
 function loadCfg() {
   const c = localStorage.getItem('itm_cfg');
@@ -1037,6 +1088,7 @@ async function syncData() {
         apiCall('getFinancials'),
         apiCall('getExpenses'),
       ]);
+      await pullCfgFromServer();   // shared settings (goals, plan mode, review link) — last write wins across devices
       finData = finDataResult || [];
       _events = eventsR; _payments = paymentsR; _assignments = assignmentsR;
       _availability = availabilityR; _expenses = expensesR;
@@ -6573,7 +6625,7 @@ function plannerRecRow(r){
   const stars = inq._stars||0;
   const stClr = stars>=4?'var(--green)':stars>=3?'var(--amber)':'var(--muted)';
   const penc = isPenciled(inq);
-  return `<div onclick="openDetail('${inq.id}')" style="display:flex;align-items:center;gap:11px;background:${r.rec?'#fff':'var(--s2)'};border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:8px;cursor:pointer;${r.rec?'':'opacity:.64'}">
+  return `<div class="rec-row" onclick="openDetail('${inq.id}')" style="display:flex;align-items:center;gap:11px;background:${r.rec?'#fff':'var(--s2)'};border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:8px;cursor:pointer;${r.rec?'':'opacity:.64'}">
     <div style="flex:none;width:48px;text-align:center;border-radius:7px;padding:5px 0;background:${peak?'var(--amberbg)':'var(--s2)'}">
       <div style="font-size:10px;color:var(--muted);text-transform:uppercase">${dow}</div>
       <div style="font-size:15px;font-weight:700;line-height:1.1">${dnum}</div>
@@ -6799,7 +6851,7 @@ function planPickRow(p, picked){
   const d = nd ? new Date(nd+'T12:00:00') : null;
   const dstr = d ? d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : '?';
   const fc = inq._followerCount||0;
-  return `<div style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-top:1px solid var(--border);${picked?'':'opacity:.62'}">
+  return `<div class="plan-row" style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-top:1px solid var(--border);${picked?'':'opacity:.62'}">
     <span style="flex:none;width:86px;font-size:11px;color:var(--muted)">${dstr}</span>
     <span style="flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer" onclick="openDetail('${inq.id}')">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;letter-spacing:-1px;color:var(--muted)">${'★'.repeat(inq._stars||0)}</span>${fc>=50000?' <span style="font-size:10px;color:var(--gold);font-weight:700">⚡'+Math.round(fc/1000)+'K</span>':''}</span>
     ${inqAgeDays(inq)!==null?`<span style="flex:none;font-size:10px;white-space:nowrap;color:${inqAgeDays(inq)>45?'var(--red)':inqAgeDays(inq)>LATE_REPLY_DAYS?'var(--amber)':'var(--muted2)'}">🕐 ${inqAgeLabel(inq)}</span>`:''}
@@ -6887,7 +6939,7 @@ function planQueuePanel(){
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Click a name to read/edit the email, then Send. Sending an accept marks it contacted + starts the follow-up cadence; a decline marks it declined. Nothing sends on its own.</div>
     ${planQueue.map((row,i)=>`
       <div style="border:1px solid var(--border);border-radius:9px;padding:8px 11px;margin-bottom:7px;background:${row.sent?'var(--s2)':'#fff'}">
-        <div style="display:flex;align-items:center;gap:9px">
+        <div class="pq-head" style="display:flex;align-items:center;gap:9px">
           <span style="flex:none;font-size:10px;font-weight:700;padding:2px 8px;border-radius:9px;background:${row.kind==='accept'?'var(--greenbg)':'var(--redbg)'};color:${row.kind==='accept'?'var(--green)':'var(--red)'}">${row.kind==='accept'?'✅ ACCEPT':'✖ DECLINE'}</span>
           ${row.late?`<span style="flex:none;font-size:10px;font-weight:600;padding:2px 8px;border-radius:9px;background:var(--amberbg);color:var(--amber)" title="They inquired ${escHtml(row.age)} — this draft opens with an apology for the slow reply">🕐 ${escHtml(row.age)} — apology included</span>`:''}
           <span style="flex:1;min-width:0;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="planQueueEdit(${i})">${escHtml(row.name)} <span style="font-weight:400;color:var(--muted)">· ${escHtml(row.email)}</span></span>
