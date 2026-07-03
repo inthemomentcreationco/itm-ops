@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-06-23-a  (LocationIQ geocoding · travel=25mpg gas · planner+prospective nested · how-to guide) -->
+<!-- VERSION: 2026-07-03-b  (Month Game Plan + calendar "Plan only" view · reply draft queue · list dedupe) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2316,10 +2316,13 @@ function setInqView(v){
 }
 
 function renderInquiries() {
-  const needs    = DATA.inquiries.filter(i => i.stage === 'new');
-  const active   = DATA.inquiries.filter(i => ['contacted','proposal','booked'].includes(i.stage));
-  const archived = DATA.inquiries.filter(i => ['archived','declined'].includes(i.stage));
-  const dueFu    = followUpsDue();
+  // Collapse duplicate form submissions (same person + event date) — the Planner
+  // views already do this; without it the list shows the same inquiry 2-3×.
+  const all      = dedupeInquiries(DATA.inquiries);
+  const needs    = all.filter(i => i.stage === 'new');
+  const active   = all.filter(i => ['contacted','proposal','booked'].includes(i.stage));
+  const archived = all.filter(i => ['archived','declined'].includes(i.stage));
+  const dueFu    = dedupeInquiries(followUpsDue());
 
   const showList = inqTab === 'needs'     ? needs
                  : inqTab === 'followups' ? dueFu
@@ -2746,6 +2749,16 @@ function copyEmail(id) {
 }
 
 
+const PRICING_LINK = 'https://drive.google.com/open?id=1I9vrcjmBaQzDyirtlNUbQ7VDwi_mMd5L';
+const REPLY_SUBJECT = 'Re: Your Inquiry — In The Moment';
+// Lauren's standard replies — shared by the detail panel templates AND the
+// Month Game Plan draft queue, so the wording only lives in one place.
+function tmplDecline(firstName) {
+  return "Hi " + firstName + "!\n\nThank you so much for thinking of us, it truly means the world! Unfortunately, our team is fully booked for your date and won't be able to make it work this time around.\n\nWe hope you find an amazing fit and wish you all the best as you plan! If you ever have a future date you'd like to connect on, we would love to be considered — please don't hesitate to reach out anytime!\n\nWishing you all the best!\nXoxo, Lauren";
+}
+function tmplAvailable(firstName) {
+  return "Hi " + firstName + "!\n\nThank you so much for reaching out — we would absolutely love to be a part of your special day! I'm happy to share that we are available for your date and cannot wait to hear more about your vision!\n\nIn the below link you'll find our current packages and pricing. Please take a look and don't hesitate to reach out with any questions — I'm also happy to hop on a quick call to walk you through everything and chat more details!\n\nLooking forward to connecting soon!\n\nITM Packages & Pricing 2026\n" + PRICING_LINK + "\n\nXoxo Lauren";
+}
 function fillTemplate(id, type) {
   const inq = DATA.inquiries.find(i=>i.id===id);
   if (!inq) return;
@@ -2753,13 +2766,8 @@ function fillTemplate(id, type) {
   const bodyEl = document.getElementById('email-body-'+id);
   const subjEl = document.getElementById('email-subj-'+id);
   if (!bodyEl) return;
-  const PRICING_LINK = 'https://drive.google.com/open?id=1I9vrcjmBaQzDyirtlNUbQ7VDwi_mMd5L';
-  if (type === 'booked') {
-    bodyEl.value = "Hi " + firstName + "!\n\nThank you so much for thinking of us, it truly means the world! Unfortunately, our team is fully booked for your date and won't be able to make it work this time around.\n\nWe hope you find an amazing fit and wish you all the best as you plan! If you ever have a future date you'd like to connect on, we would love to be considered — please don't hesitate to reach out anytime!\n\nWishing you all the best!\nXoxo, Lauren";
-  } else {
-    bodyEl.value = "Hi " + firstName + "!\n\nThank you so much for reaching out — we would absolutely love to be a part of your special day! I'm happy to share that we are available for your date and cannot wait to hear more about your vision!\n\nIn the below link you'll find our current packages and pricing. Please take a look and don't hesitate to reach out with any questions — I'm also happy to hop on a quick call to walk you through everything and chat more details!\n\nLooking forward to connecting soon!\n\nITM Packages & Pricing 2026\n" + PRICING_LINK + "\n\nXoxo Lauren";
-  }
-  if (subjEl) subjEl.textContent = 'Subject: Re: Your Inquiry — In The Moment';
+  bodyEl.value = (type === 'booked') ? tmplDecline(firstName) : tmplAvailable(firstName);
+  if (subjEl) subjEl.textContent = 'Subject: ' + REPLY_SUBJECT;
 }
 async function aiDraftEmail(id) {
   const inq = DATA.inquiries.find(i=>i.id===id);
@@ -6149,6 +6157,7 @@ function removeBookedDate(i) { DATA.bookedDates.splice(i,1); saveCfg(); DATA.inq
 // from actually booking the inquiry. Written by _rowIndex like updateInquiryStage.
 
 let plannerView    = 'calendar';                // 'calendar' | 'year'
+let plannerFilter  = 'all';                      // 'all' = every inquiry | 'plan' = booked + plan picks/penciled only
 let plannerMonth   = new Date().getMonth();
 let plannerYear    = new Date().getFullYear();
 let plannerOpenDay = null;                       // ds of the expanded matchup day
@@ -6157,7 +6166,7 @@ let plannerRecSort = 'fit';                      // 'fit' | 'money' | 'date' | '
 
 function planMoney(n){ return '$' + Math.round(n||0).toLocaleString(); }
 function planMoneyK(n){ return '$' + (Math.round((n||0)/100)/10) + 'k'; }
-function planPrice(inq){ return (inq && (inq._myPrice || getMyPrice(inq))) || 2400; }
+function planPrice(inq){ return (inq && (inq._myPrice || getMyPrice(inq))) || 2600; }
 function inqYear(inq){ const nd = normalizeDate(inq.eventDate); return nd ? nd.slice(0,4) : ''; }
 function isPenciled(inq){ return !!inq && inq.planStatus === 'penciled'; }
 function isPassed(inq){ return !!inq && inq.planStatus === 'passed'; }
@@ -6279,6 +6288,18 @@ function renderPlanner(){
     const nd = normalizeDate(inq.eventDate); if(!nd) return;
     (inqMap[nd]=inqMap[nd]||[]).push(inq);
   });
+  // "Plan only" lens: keep just the suggested plan's picks + anything penciled —
+  // booked events always show. Everything else disappears from the grid.
+  if(plannerFilter==='plan'){
+    const planRids = new Set();
+    const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
+    if(planCurrent && planCurrent.key===pfx) planCurrent.picks.forEach(p=>planRids.add(p.r.inq._rowIndex));
+    (DATA.inquiries||[]).forEach(i=>{ if(isPenciled(i)) planRids.add(i._rowIndex); });
+    Object.keys(inqMap).forEach(ds=>{
+      inqMap[ds] = inqMap[ds].filter(i=>planRids.has(i._rowIndex));
+      if(!inqMap[ds].length) delete inqMap[ds];
+    });
+  }
   const bookMap = {};
   getMergedEvents().forEach(e=>{ const d=(e.date||e.eventDate||''); if(d){ (bookMap[d]=bookMap[d]||[]).push(e); } });
 
@@ -6290,11 +6311,16 @@ function renderPlanner(){
       <button class="cal-nav-btn" onclick="plannerNav(1)">›</button>
       <button class="cal-today-btn" onclick="plannerToday()">Today</button>
       <div class="cal-month-label">${monthName}</div>
-      <div style="margin-left:auto;display:flex;gap:8px">
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <span style="display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden">
+          <button onclick="plannerFilter='all';renderPlanner()" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${plannerFilter==='all'?'var(--gold)':'transparent'};color:${plannerFilter==='all'?'#fff':'var(--muted)'}">Everything</button>
+          <button onclick="plannerFilter='plan';renderPlanner()" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${plannerFilter==='plan'?'var(--gold)':'transparent'};color:${plannerFilter==='plan'?'#fff':'var(--muted)'}">Plan only</button>
+        </span>
         <button class="btn btn-gold" style="padding:4px 12px;font-size:11px">Calendar</button>
         <button class="btn btn-outline" onclick="plannerView='year';renderPlanner()" style="padding:4px 12px;font-size:11px">Year</button>
       </div>
     </div>
+    ${plannerFilter==='plan' ? `<div style="font-size:11px;color:var(--muted);margin:2px 2px 6px">Showing 🔒 booked events + the plan only (suggested picks &amp; ✏ penciled). Switch to Everything to see all inquiries.</div>` : ''}
     <div class="cal-dow-row">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}</div>
     <div class="cal-body">
       ${Array.from({length:firstDay},()=>`<div class="cal-cell other-month"></div>`).join('')}
@@ -6302,14 +6328,14 @@ function renderPlanner(){
         const day=i+1, ds=`${yr}-${String(mo+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
         const isToday=ds===todayStr;
         const books=bookMap[ds]||[], inqs=inqMap[ds]||[];
-        const contested = inqs.length>1;
+        const contested = plannerFilter!=='plan' && inqs.length>1;   // plan view: multiple picks share a date by design, not a conflict
         return `<div class="cal-cell${isToday?' today':''}${contested?' conflict-day':''}" ${contested?`onclick="plannerOpenDay='${ds}';renderPlanner()" style="cursor:pointer"`:''}>
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div class="cal-dn">${day}</div>
             ${contested?`<span style="font-size:9px;font-weight:700;color:#fff;background:var(--gold);border-radius:9px;padding:1px 6px">${inqs.length} ⚡</span>`:''}
           </div>
           ${books.slice(0,2).map(e=>`<div class="cal-pill" style="background:var(--s2);color:var(--muted)" title="${escHtml(e.client||'Booked')}">🔒 ${escHtml(e.client||'Booked')}</div>`).join('')}
-          ${inqs.slice(0,contested?1:2).map(inq=>plannerChip(inq)).join('')}
+          ${inqs.slice(0,contested?1:(plannerFilter==='plan'?3:2)).map(inq=>plannerChip(inq)).join('')}
           ${contested?`<div class="cal-more">+${inqs.length-1} more — compare</div>`:''}
         </div>`;
       }).join('')}
@@ -6453,6 +6479,7 @@ function plannerRecStrip(yr, mo){
   const recTotal = bookedM + recRows.reduce((s,r)=>s+planPrice(r.inq),0);
   const sortOpts = [['fit','Best fit'],['money','Highest $'],['date','Soonest date'],['reach','Most followers']];
   return `
+  ${planPanel(yr, mo)}
   <div style="margin-top:16px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
       <span style="font-size:16px;font-weight:600">${monthName} — ${recRows.length} recommended</span>
@@ -6487,6 +6514,218 @@ function respondToInquiry(id){
   openDetail(id);
   fillTemplate(id, 'available');
   setTimeout(function(){ var el=document.getElementById('email-draft-area-'+id); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); }, 30);
+}
+
+// ── MONTH GAME PLAN — goal-driven suggested schedule for the visible month ──
+// Fill the month toward a monthly $ goal: highest package price first, except
+// VIP planners and 50K+ influencers ALWAYS make the plan (even past the goal).
+// A date can hold as many events as there are free shooters that day.
+let planCurrent    = null;          // computed plan for the visible month (or null)
+let planManualExcl = new Set();     // rowIndexes Hue removed by hand — optimizer refills around them
+let planQueue      = null;          // reply drafts built from the plan (or null)
+
+function monthGoal(){ return +CFG.monthlyGoal || Math.round((+CFG.revenueGoal||150000)/12); }
+function setMonthGoal(v){
+  CFG.monthlyGoal = Math.max(0, parseInt(String(v).replace(/[^0-9]/g,''))||0);
+  saveCfg();
+  if(planCurrent) planCurrent = buildMonthPlan(plannerYear, plannerMonth);
+  renderPlanner();
+}
+
+// How many events can the team physically cover on a date?
+// = shooters who are available or on hold; if nobody has data, assume 1.
+function dateCapacity(ds){
+  const av = getAvailabilityForDate(ds);
+  if(!av) return 1;
+  const canShoot = (av.teamStatus||[]).filter(c=>c.status==='available'||c.status==='free').length;
+  if(canShoot > 0) return canShoot;
+  return (av.unknownContractors||[]).length > 0 ? 1 : 0;
+}
+function isPlanVIP(inq){ return !!inq._isVIP || (inq._followerCount||0) >= 50000; }
+
+function buildMonthPlan(yr, mo){
+  const todayStr = new Date().toISOString().split('T')[0];
+  const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
+  const rows = plannerMonthRows(yr, mo).filter(r=>r.nd && r.nd >= todayStr && !isPassed(r.inq));
+  const viable = rows.filter(r=>r.rec);
+  const bookedM = getMergedEvents().filter(e=>{ const dd=(e.date||e.eventDate||''); return dd.slice(0,7)===pfx; })
+                    .reduce((s,e)=>s+(e.contractValue||e.grossAmount||0),0);
+  const goal = monthGoal();
+  const cap = {}, used = {};
+  viable.forEach(r=>{ if(!(r.nd in cap)) cap[r.nd] = dateCapacity(r.nd); });
+  // Priority: locked pencils → VIP/50K+ → everyone else; then $ desc, then score.
+  const tier = r => isPenciled(r.inq) ? 0 : isPlanVIP(r.inq) ? 1 : 2;
+  const ordered = viable.slice().sort((a,b)=>
+    tier(a)-tier(b) || planPrice(b.inq)-planPrice(a.inq) || (b.inq._score||0)-(a.inq._score||0));
+  const picks=[], skips=[];
+  let sum = 0;
+  ordered.forEach(r=>{
+    const rid = r.inq._rowIndex, price = planPrice(r.inq), vip = isPlanVIP(r.inq), locked = isPenciled(r.inq);
+    if(planManualExcl.has(rid)){ skips.push({r, why:'removed by you'}); return; }
+    used[r.nd] = used[r.nd]||0;
+    if(used[r.nd] >= (cap[r.nd] ?? 1)){
+      skips.push({r, why:`date full — ${cap[r.nd]||0} shooter${(cap[r.nd]||0)===1?'':'s'} free that day`}); return;
+    }
+    if(!locked && !vip && (bookedM + sum) >= goal){ skips.push({r, why:'monthly goal already met'}); return; }
+    used[r.nd]++; sum += price;
+    const fc = r.inq._followerCount||0;
+    picks.push({ r, why: locked ? 'already penciled'
+                       : vip ? (fc>=50000 ? Math.round(fc/1000)+'K reach — always take' : 'VIP — always take')
+                       : 'best $ for the date' });
+  });
+  return { key:pfx, picks, skips, goal, bookedM, sum, projected: bookedM+sum };
+}
+
+function suggestPlan(){ planManualExcl.clear(); planCurrent = buildMonthPlan(plannerYear, plannerMonth); planQueue = null; renderPlanner(); }
+function dismissPlan(){ planCurrent = null; planQueue = null; planManualExcl.clear(); renderPlanner(); }
+function planExclToggle(rid){
+  if(planManualExcl.has(rid)) planManualExcl.delete(rid); else planManualExcl.add(rid);
+  planCurrent = buildMonthPlan(plannerYear, plannerMonth);
+  renderPlanner();
+}
+async function pencilPlanPicks(){
+  if(!planCurrent) return;
+  const toPencil = planCurrent.picks.map(p=>p.r.inq).filter(i=>!isPenciled(i));
+  toPencil.forEach(inq=>{
+    inq.planStatus = 'penciled';
+    if(inq._rowIndex) apiCall('updateInquiryPlan',{rowIndex:inq._rowIndex, planStatus:'penciled'}).catch(()=>{});
+  });
+  toast(`✏ Penciled ${toPencil.length} event${toPencil.length===1?'':'s'}`);
+  planCurrent = buildMonthPlan(plannerYear, plannerMonth);
+  renderPlanner(); renderProspective();
+}
+
+// ── Draft queue: the plan becomes an outbox — accepts for picks, declines for
+// the leads the plan turned down. Nothing sends without a click per email. ──
+function buildPlanQueue(){
+  if(!planCurrent) return;
+  const q = [];
+  const seen = new Set();
+  const push = (inq, kind) => {
+    const rid = inq._rowIndex;
+    if(!rid || seen.has(rid) || !inq.email) return;
+    if(inq.stage !== 'new') return;              // already in conversation / decided — don't blast them
+    seen.add(rid);
+    const first = (inq.name||'there').split(' ')[0];
+    q.push({ rid, email: inq.email, name: inq.name||'(no name)', kind,
+             subject: REPLY_SUBJECT,
+             body: kind==='accept' ? tmplAvailable(first) : tmplDecline(first),
+             sent: false, sending: false });
+  };
+  planCurrent.picks.forEach(p=>push(p.r.inq,'accept'));
+  // Declines = leads the plan actively turned down (lost their date) + auto-declines/below-bar.
+  // "Goal met" skips stay open — they're fine leads Lauren may still want later.
+  planCurrent.skips.filter(s=>/date full/.test(s.why)).forEach(s=>push(s.r.inq,'decline'));
+  plannerMonthRows(plannerYear, plannerMonth).filter(r=>!r.rec && r.nd && r.nd >= new Date().toISOString().split('T')[0])
+    .forEach(r=>push(r.inq,'decline'));
+  planQueue = q;
+  renderPlanner();
+}
+async function sendPlanDraft(i){
+  const row = planQueue && planQueue[i];
+  if(!row || row.sent || row.sending) return;
+  const bodyEl = document.getElementById('pq-body-'+i);
+  if(bodyEl) row.body = bodyEl.value;
+  if(!row.body.trim()){ toast('⚠ Email body is empty'); return; }
+  row.sending = true; renderPlanner();
+  try {
+    const result = await apiCall('sendEmail', { to: row.email, subject: row.subject, body: row.body });
+    if(!(result && result.sent)) throw new Error('unexpected response');
+    row.sent = true;
+    const inq = (DATA.inquiries||[]).find(x=>x._rowIndex===row.rid);
+    if(inq){
+      inq.stage = row.kind==='accept' ? 'contacted' : 'declined';
+      if(row.kind==='accept' && typeof startFollowUp==='function') startFollowUp(inq);
+      apiCall('updateInquiryStage', { rowIndex: row.rid, stage: inq.stage, emailSent: true }).catch(()=>{});
+    }
+    toast(`✓ Sent to ${row.name}`);
+  } catch(e){ toast('⚠ Send failed: '+(e.message||e)); }
+  row.sending = false;
+  renderPlanner();
+}
+function planQueueEdit(i){
+  const row = planQueue && planQueue[i]; if(!row) return;
+  row.open = !row.open;
+  renderPlanner();
+}
+function planQueueSyncBody(i, v){ if(planQueue && planQueue[i]) planQueue[i].body = v; }
+
+function planPickRow(p, picked){
+  const inq = p.r.inq, nd = p.r.nd;
+  const d = nd ? new Date(nd+'T12:00:00') : null;
+  const dstr = d ? d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : '?';
+  const fc = inq._followerCount||0;
+  return `<div style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-top:1px solid var(--border);${picked?'':'opacity:.62'}">
+    <span style="flex:none;width:86px;font-size:11px;color:var(--muted)">${dstr}</span>
+    <span style="flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer" onclick="openDetail('${inq.id}')">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;letter-spacing:-1px;color:var(--muted)">${'★'.repeat(inq._stars||0)}</span>${fc>=50000?' <span style="font-size:10px;color:var(--gold);font-weight:700">⚡'+Math.round(fc/1000)+'K</span>':''}</span>
+    <span style="flex:none;font-size:10px;color:var(--muted2);white-space:nowrap">${escHtml(p.why)}</span>
+    <span style="flex:none;font-size:13px;font-weight:700;width:56px;text-align:right">${planMoney(planPrice(inq))}</span>
+    <button class="btn btn-outline" style="flex:none;font-size:11px;padding:3px 8px" onclick="planExclToggle(${inq._rowIndex})" title="${picked?'Remove from plan':'Put back in plan'}">${picked?'✕':'↩'}</button>
+  </div>`;
+}
+
+function planPanel(yr, mo){
+  const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
+  if(planCurrent && planCurrent.key !== pfx){ planCurrent = null; planQueue = null; planManualExcl.clear(); }
+  const monthName = new Date(yr,mo,1).toLocaleDateString('en-US',{month:'long'});
+  const goalInput = `<span style="font-size:11px;color:var(--muted)">Monthly goal $</span><input type="number" value="${monthGoal()}" onchange="setMonthGoal(this.value)" style="width:78px;padding:3px 6px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream)">`;
+  if(!planCurrent){
+    return `<div class="card" style="margin-top:16px;padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:13px"><b>🎯 ${monthName} game plan</b> — fill the month toward the goal: highest $ first, VIP &amp; 50K+ always in, dates share only when shooters are free.</span>
+      ${goalInput}
+      <button class="btn btn-gold" style="padding:6px 14px;font-size:12px" onclick="suggestPlan()">Suggest plan</button>
+    </div>`;
+  }
+  const P = planCurrent;
+  const scale = Math.max(P.goal, P.projected)*1.08 || 1;
+  const nQ = P.picks.filter(p=>p.r.inq.stage==='new' && p.r.inq.email).length;
+  return `<div class="card" style="margin-top:16px;padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <span style="font-size:15px;font-weight:600">🎯 ${monthName} game plan — take ${P.picks.length}, ${planMoney(P.projected)} projected</span>
+      ${goalInput}
+      <span style="margin-left:auto;display:flex;gap:6px">
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="suggestPlan()" title="Recompute from scratch">↻</button>
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="dismissPlan()">✕</button>
+      </span>
+    </div>
+    <div style="height:16px;border-radius:6px;background:var(--s2);display:flex;overflow:hidden;position:relative;margin-bottom:4px">
+      <div style="width:${P.bookedM/scale*100}%;background:var(--green);opacity:.85"></div>
+      <div style="width:${P.sum/scale*100}%;background:rgba(139,26,26,0.18);border-left:2px solid var(--gold)"></div>
+      <div style="position:absolute;top:-2px;bottom:-2px;left:${P.goal/scale*100}%;width:2px;background:var(--cream)"></div>
+    </div>
+    <div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-bottom:6px">
+      <span><b style="color:var(--green)">${planMoney(P.bookedM)}</b> booked</span>
+      <span><b style="color:var(--gold)">${planMoney(P.sum)}</b> this plan</span>
+      <span><b>${planMoney(P.goal)}</b> goal ${P.projected>=P.goal?'✓':`(${planMoney(P.goal-P.projected)} short — that's every viable lead)`}</span>
+    </div>
+    ${P.picks.length ? P.picks.map(p=>planPickRow(p,true)).join('') : '<div style="padding:14px;font-size:12px;color:var(--muted)">No viable future inquiries left this month.</div>'}
+    ${P.skips.length ? `<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">${P.skips.length} not in the plan — why</summary>${P.skips.map(s=>planPickRow(s,false)).join('')}</details>` : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn btn-gold" style="font-size:12px;padding:6px 14px" onclick="pencilPlanPicks()">✏ Pencil all ${P.picks.length}</button>
+      <button class="btn btn-outline" style="font-size:12px;padding:6px 14px" onclick="buildPlanQueue()" title="Accept drafts for picks + polite declines for date-conflict losers and auto-declines">✉ Draft the replies</button>
+    </div>
+    ${planQueuePanel()}
+  </div>`;
+}
+
+function planQueuePanel(){
+  if(!planQueue) return '';
+  if(!planQueue.length) return `<div style="margin-top:12px;font-size:12px;color:var(--muted)">Nothing to draft — everyone in this plan has already been contacted or has no email.</div>`;
+  const unsent = planQueue.filter(r=>!r.sent).length;
+  return `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:2px">✉ Reply drafts — ${unsent} to review</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Click a name to read/edit the email, then Send. Sending an accept marks it contacted + starts the follow-up cadence; a decline marks it declined. Nothing sends on its own.</div>
+    ${planQueue.map((row,i)=>`
+      <div style="border:1px solid var(--border);border-radius:9px;padding:8px 11px;margin-bottom:7px;background:${row.sent?'var(--s2)':'#fff'}">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="flex:none;font-size:10px;font-weight:700;padding:2px 8px;border-radius:9px;background:${row.kind==='accept'?'var(--greenbg)':'var(--redbg)'};color:${row.kind==='accept'?'var(--green)':'var(--red)'}">${row.kind==='accept'?'✅ ACCEPT':'✖ DECLINE'}</span>
+          <span style="flex:1;min-width:0;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="planQueueEdit(${i})">${escHtml(row.name)} <span style="font-weight:400;color:var(--muted)">· ${escHtml(row.email)}</span></span>
+          ${row.sent ? `<span style="flex:none;font-size:11px;color:var(--green);font-weight:600">✓ sent</span>`
+                     : `<button class="btn btn-gold" style="flex:none;font-size:11px;padding:4px 11px" ${row.sending?'disabled':''} onclick="sendPlanDraft(${i})">${row.sending?'Sending…':'📤 Send'}</button>`}
+        </div>
+        ${row.open && !row.sent ? `<textarea id="pq-body-${i}" oninput="planQueueSyncBody(${i}, this.value)" style="width:100%;margin-top:8px;min-height:150px;font-size:12px;padding:8px;border:1px solid var(--border2);border-radius:7px;box-sizing:border-box">${escHtml(row.body)}</textarea>` : ''}
+      </div>`).join('')}
+  </div>`;
 }
 
 // ── Matchup: head-to-head comparison for a contested date ──
@@ -6584,7 +6823,7 @@ function renderProspective(){
   const pencCount = plannerPenciled(year).length;
   const avg = pencCount ? t.penc/pencCount : 0;
   const scale = Math.max(t.goal, t.projected)*1.08 || 1;
-  const needToGoal = t.gap>0 ? Math.ceil(t.gap / (avg||2576)) : 0;
+  const needToGoal = t.gap>0 ? Math.ceil(t.gap / (avg||2800)) : 0;
   const undecided = cands.filter(i=>!isPenciled(i)).length;
 
   el.innerHTML = `
@@ -6623,7 +6862,7 @@ function renderProspective(){
         <div><div style="font-size:17px;font-weight:600">${planMoney(avg)}</div><div style="font-size:11px;color:var(--muted)">avg / penciled</div></div>
         <div><div style="font-size:17px;font-weight:600;color:var(--muted)">+${planMoney(t.open)}</div><div style="font-size:11px;color:var(--muted)">open potential</div></div>
       </div>
-      ${t.gap>0 && undecided ? `<div style="font-size:12px;color:var(--muted);border-top:1px solid var(--border);margin-top:12px;padding-top:10px">💡 Pencil <b>${needToGoal} more</b> recommended date${needToGoal===1?'':'s'} to clear your ${planMoneyK(t.goal)} goal · avg ${planMoney(avg||2576)}/event</div>` : ''}
+      ${t.gap>0 && undecided ? `<div style="font-size:12px;color:var(--muted);border-top:1px solid var(--border);margin-top:12px;padding-top:10px">💡 Pencil <b>${needToGoal} more</b> recommended date${needToGoal===1?'':'s'} to clear your ${planMoneyK(t.goal)} goal · avg ${planMoney(avg||2800)}/event</div>` : ''}
     </div>
 
     <div style="display:flex;gap:7px;flex-wrap:wrap;margin:14px 0 4px">
