@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-03-f  (installable app: PWA tags + icon/manifest · mobile layout pass · cross-device settings sync) -->
+<!-- VERSION: 2026-07-04-b  (team add/remove w/ history · paid-checklist unification · tile drill-downs · audit fixes) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -880,13 +880,16 @@ let DATA = {
   historicalEvents: [],
   deliverables: [],
   tasks: [],
+  // Default roster — once edited (add/remove/rename), the roster lives in CFG.contractors
+  // and syncs across devices. `active:false` = off the team: hidden from availability,
+  // capacity, and assignment pickers, but ALL their historical pay/events remain.
   contractors:  [
-    { id:'c1', name:'Lauren Nava', role:'Owner / Shooter', isOwner:true },
-    { id:'c2', name:'Bianca Young', role:'Shooter', isOwner:false },
-    { id:'c3', name:'Lilly Economus', role:'Shooter / Editor', isOwner:false },
-    { id:'c4', name:'Roshni Lewis', role:'Shooter', isOwner:false },
-    { id:'c5', name:'Cece Economus', role:'Shooter', isOwner:false },
-    { id:'c6', name:'Jasmine Marquez', role:'Shooter', isOwner:false },
+    { id:'c1', name:'Lauren Nava', role:'Owner / Shooter', isOwner:true,  active:true,  token:'lauren_itm_2026' },
+    { id:'c2', name:'Bianca Young', role:'Shooter', isOwner:false, active:true,  token:'bianca_itm_2026' },
+    { id:'c3', name:'Lilly Economus', role:'Shooter / Editor', isOwner:false, active:true,  token:'lilly_itm_2026' },
+    { id:'c4', name:'Roshni Lewis', role:'Shooter', isOwner:false, active:false, token:'roshni_itm_2026' },   // off the team 2026-07 (Hue)
+    { id:'c5', name:'Cece Economus', role:'Shooter', isOwner:false, active:true,  token:'cece_itm_2026' },
+    { id:'c6', name:'Jasmine Marquez', role:'Shooter', isOwner:false, active:true,  token:'jasmine_itm_2026' },
   ],
 };
 
@@ -970,7 +973,17 @@ async function apiCall(action, payload) {
 // ════════════════════════════════ PERSIST (config only, no financial data) ════════════════════════════════
 // Settings that should look the same on every device (Hue's Mac, Lauren's phone).
 // Pushed to a Script Property on change, pulled on every sync — last write wins.
-const CFG_SYNC_KEYS = ['revenueGoal','monthlyGoal','monthlyEvents','planMode','reviewLink'];
+const CFG_SYNC_KEYS = ['revenueGoal','monthlyGoal','monthlyEvents','planMode','reviewLink','contractors'];
+
+// ── Roster helpers: CFG.contractors (synced) overrides the hardcoded defaults ──
+function activeContractors(){ return (DATA.contractors||[]).filter(c => c.active !== false); }
+function applyRoster(){
+  if (Array.isArray(CFG.contractors) && CFG.contractors.length) DATA.contractors = CFG.contractors;
+}
+function persistRoster(){
+  CFG.contractors = DATA.contractors;
+  saveCfg();
+}
 let _cfgPushTimer = null;
 function saveCfg() {
   localStorage.setItem('itm_cfg', JSON.stringify(CFG));
@@ -999,6 +1012,7 @@ async function pullCfgFromServer(){
     }
     localStorage.setItem('itm_cfg', JSON.stringify(CFG));   // persist without re-triggering a push
     localStorage.setItem('itm_cfg_ts', String(r.updatedAt));
+    applyRoster();                                          // roster changes made on another device
   } catch(e) { /* older backend without getCfg — harmless */ }
 }
 function loadCfg() {
@@ -1021,6 +1035,7 @@ async function save() {
 // ════════════════════════════════ INIT ════════════════════════════════
 window.addEventListener('DOMContentLoaded', () => {
   loadCfg();
+  applyRoster();
   _secret = getSecret() || '';
 
   if (!_secret) {
@@ -1662,8 +1677,9 @@ function getAvailabilityForDate(dateStr) {
 
   const laurenBooked = isLaurenBooked(d);
 
-  // Check each contractor's status for this date
-  const teamStatus = DATA.contractors.map(c => {
+  // Check each ACTIVE contractor's status for this date (former team members
+  // don't count toward availability or capacity)
+  const teamStatus = activeContractors().map(c => {
     // Find the most recent entry for this person on this date (match by id or name)
     const entry = DATA.availability
       .filter(a => (a.contractorId === c.id || a.name === c.name) && normalizeDate(a.date) === d)
@@ -2991,9 +3007,10 @@ async function bookInquiry(id) {
   DATA.events.push(event);
   inq.stage = 'booked';
 
-  // Also mark stage in the inquiry sheet
+  // Also mark stage in the inquiry sheet — always via _rowIndex (the inq_N id is
+  // positional and must never be used to derive a sheet row)
   try {
-    await apiCall('updateInquiryStage', { rowIndex: parseInt(id.replace('inq_','')) + 1, stage: 'booked' });
+    if (inq._rowIndex) await apiCall('updateInquiryStage', { rowIndex: inq._rowIndex, stage: 'booked' });
   } catch(e) { /* non-critical */ }
 
   saveCfg();
@@ -3008,7 +3025,7 @@ function buildAvailOverview() {
   var today = new Date();
   var todayStr = today.toISOString().split('T')[0];
   var avail = DATA.availability || [];
-  var team = DATA.contractors || [];
+  var team = activeContractors();
 
   // Build next 45 days
   var days = [];
@@ -3092,9 +3109,10 @@ async function toggleAvailCell(contractorId, contractorName, dateStr, td) {
   td.querySelector('div').textContent = icon;
   td.querySelector('div').style.color = color;
 
-  // Find the matching token for this contractor
-  var tokenMap = {c1:'lauren_itm_2026',c2:'bianca_itm_2026',c3:'lilly_itm_2026',c4:'roshni_itm_2026',c5:'cece_itm_2026',c6:'jasmine_itm_2026'};
-  var token = tokenMap[contractorId] || '';
+  // Token comes from the roster (original 6 have fixed tokens); members added later
+  // use the generated cid_<id> form, which the backend validates against the synced roster.
+  var member = (DATA.contractors||[]).find(function(c){ return c.id === contractorId; });
+  var token = (member && member.token) || ('cid_' + contractorId);
 
   try {
     await apiCall('saveAvailBatch', { token: token, dates: [{ date: dateStr, status: next }] });
@@ -3106,6 +3124,28 @@ async function toggleAvailCell(contractorId, contractorName, dateStr, td) {
     td.querySelector('div').textContent = current === 'free' ? '⏳' : current === 'busy' ? '✕' : '·';
     td.querySelector('div').style.color = current === 'free' ? 'var(--amber)' : current === 'busy' ? 'var(--red)' : 'var(--border2)';
   }
+}
+
+// Resolve the Financials paid-checklist key (finRowId_slot) for an event + contractor.
+// Matches the financial row by id first, then by date + client name; slot by which
+// contractor column carries this person's name. Null if there's nothing to reconcile.
+function checklistKeyFor(ev, contractorName) {
+  if (!ev || !contractorName) return null;
+  const hist = DATA.historicalEvents || [];
+  let fin = hist.find(r => r.id === ev.id);
+  if (!fin) {
+    const evDate = normalizeDate(ev.eventDate || ev.date) || '';
+    const c = String(ev.client||'').toLowerCase();
+    const cFirst = c.split(/[&,]/)[0].trim();
+    fin = hist.find(r => (r.date||'') === evDate && (() => {
+      const rc = String(r.client||'').toLowerCase();
+      return rc && cFirst && (rc.includes(cFirst) || c.includes(rc.split(/[&,]/)[0].trim()));
+    })());
+  }
+  if (!fin) return null;
+  if (fin.contractorName === contractorName)  return fin.id + '_1';
+  if (fin.contractorName2 === contractorName) return fin.id + '_2';
+  return null;
 }
 
 // ── Unified pay data: merges ITM_Payments sheet + localStorage paidLog from Financials ──
@@ -3364,7 +3404,7 @@ function renderContractors() {
     </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:14px">Tap a card to see full profile: events, deliverables, pay, and availability</div>
     <div class="contractor-grid">
-      ${DATA.contractors.map(c=>{
+      ${activeContractors().map(c=>{
         const uPay     = getUnifiedPay(c);
         const allPays  = uPay.sheetPays.map(p=>({amount:p.amount,date:p.date})).concat(uPay.logPays);
         const ytd      = allPays.filter(p=>new Date(p.date).getFullYear()===year).reduce((s,p)=>s+p.amount,0);
@@ -3431,6 +3471,21 @@ function renderContractors() {
           + '</div>';
       }).join('')}
     </div>
+
+    ${(DATA.contractors||[]).some(c=>c.active===false) ? `
+    <div class="sec-label" style="margin-top:20px">Former Team</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Off the team — no longer counted for availability or new events. Their pay history stays on record.</div>
+    <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:20px">
+      ${(DATA.contractors||[]).filter(c=>c.active===false).map((c,i)=>{
+        const uPay = getUnifiedPay(c);
+        const paidTotal = uPay.sheetPays.reduce((s,p)=>s+(+p.amount||0),0) + uPay.logPays.reduce((s,p)=>s+(+p.amount||0),0);
+        return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;${i>0?'border-top:1px solid var(--border)':''}">
+          <div style="flex:1"><span style="font-weight:600;color:var(--cream);font-size:13px">${escHtml(c.name)}</span> <span style="font-size:11px;color:var(--muted2)">· ${escHtml(c.role||'')}</span></div>
+          <div style="font-size:12px;color:var(--muted)">paid all-time <b style="color:var(--cream)">$${Math.round(paidTotal).toLocaleString()}</b></div>
+          <button class="btn btn-outline" style="font-size:10px;padding:3px 10px" onclick="setContractorActive('${c.id}', true)">↩ Reactivate</button>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
 
     ${payments.length ? `
     <div class="sec-label" style="margin-top:20px">Payment History</div>
@@ -3782,7 +3837,7 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
         : e.paid
           ? '<span style="font-size:11px;color:var(--green)">✓ Paid' + (e.paidDate ? ' · ' + new Date(e.paidDate).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '') + (e.paidMethod ? ' via ' + e.paidMethod : '') + '</span>'
           : e.pay > 0
-            ? '<button class="btn btn-gold" style="font-size:10px;padding:2px 10px" onclick="openMarkContractorPaid(\'' + e.key + '\',\'' + name.replace(/'/g,"\\'") + '\',' + e.pay + ')">Mark Paid</button>'
+            ? '<button class="btn btn-gold" style="font-size:10px;padding:2px 10px" onclick="openMarkContractorPaid(\'' + e.key + '\',\'' + escJs(name) + '\',' + e.pay + ')">Mark Paid</button>'
             : '<span style="font-size:10px;color:var(--muted)">No pay set</span>';
 
       rows += '<tr style="' + (isUnpaid ? 'background:rgba(255,180,0,0.04)' : '') + '">' +
@@ -3815,7 +3870,7 @@ function renderFinContractors(unpaidPay, paidPay, allPayments, liveEvents) {
           '<div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">' +
             '<input type="checkbox" id="sel-all-' + toggleId + '" onchange="toggleSelectAll(\'' + toggleId + '\',this.checked)" style="cursor:pointer"> ' +
             '<label for="sel-all-' + toggleId + '" style="font-size:11px;color:var(--muted2);cursor:pointer">Select all unpaid</label>' +
-            '<button class="btn btn-gold" style="font-size:10px;padding:2px 10px;margin-left:auto" onclick="markSelectedPaid(\'' + toggleId + '\',\'' + name.replace(/'/g,"\\'") + '\')">Mark Selected Paid</button>' +
+            '<button class="btn btn-gold" style="font-size:10px;padding:2px 10px;margin-left:auto" onclick="markSelectedPaid(\'' + toggleId + '\',\'' + escJs(name) + '\')">Mark Selected Paid</button>' +
           '</div>' : '') +
         '<table class="tbl" style="margin:0"><thead><tr><th></th><th>Date</th><th>Client</th><th>Hours</th><th>Amount Due</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '</div></div>';
@@ -4009,7 +4064,7 @@ function renderFinLedger(sortedYear, yearRows, allRows, thisYear, grossRev) {
             <td style="color:${statusColor};font-weight:600;font-size:11px">${status}</td>
             <td style="white-space:nowrap">
               <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
-              <button class="btn btn-outline" style="font-size:10px;padding:3px 8px;margin-left:4px" onclick="openDeliverableModal('${r.id}','${(r.client||'').replace(/'/g,"\\'")}')">📋</button>
+              <button class="btn btn-outline" style="font-size:10px;padding:3px 8px;margin-left:4px" onclick="openDeliverableModal('${r.id}','${escJs(r.client||'')}')">📋</button>
             </td>
           </tr>`;
         }).join('') : `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">No ${thisYear} events — sync to pull from sheet</td></tr>`}
@@ -4969,22 +5024,7 @@ function markNoCharge(overrideKey) {
   renderFinancials();
 }
 
-async function markVenmoPaid(paymentId) {
-  const p = DATA.payments.find(p => p.id === paymentId);
-  if (!p) return;
-  const name = p.contractorName || p.contractorId;
-  const amt  = parseFloat(p.amount)||0;
-  if (!confirm(`Mark Venmo sent to ${name} for $${amt.toLocaleString()}?`)) return;
-  p.venmoSent = true;
-  p.paid      = true;
-  p.paidDate  = new Date().toISOString().split('T')[0];
-  try {
-    await apiCall('savePayment', p);
-    toast(`✓ Venmo payment to ${name} recorded`);
-    renderFinancials();
-    renderDashboard();
-  } catch(e) { toast('Error saving: ' + e.message); }
-}
+// (markVenmoPaid removed 2026-07-04 — dead code, zero callers)
 
 function updateFin(key, val) {
   const num = parseFloat(val);
@@ -4994,74 +5034,9 @@ function updateFin(key, val) {
   renderFinancials();
 }
 
-function calcHire() {
-  const rate   = +(document.getElementById('hire-rate')?.value)||100;
-  const hrs    = +(document.getElementById('hire-hrs')?.value)||8;
-  const evts   = +(document.getElementById('hire-events')?.value)||4;
-  const res    = document.getElementById('hire-result');
-  if (!res) return;
+// (calcHire removed 2026-07-04 — dead code, zero callers)
 
-  loadFin();
-  const monthlyCost  = rate * hrs * evts;
-  const annualCost   = monthlyCost * 12;
-  const revenueNeeded = annualCost / (1 - FIN.taxRate);
-  const eventsNeeded  = avgNetPerEventCalc() > 0 ? Math.ceil(revenueNeeded / avgNetPerEventCalc()) : 0;
-  const canAfford     = takeHomeCalc() - FIN.ownSalaryGoal > annualCost;
-
-  res.innerHTML = `
-    <div style="font-size:11px;color:var(--gold);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px">Cost Breakdown</div>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      ${[
-        { label:'Monthly cost', val:'$'+monthlyCost.toLocaleString() },
-        { label:'Annual cost', val:'$'+annualCost.toLocaleString() },
-        { label:'Extra revenue needed (after tax)', val:'$'+Math.round(revenueNeeded).toLocaleString() },
-        { label:'Extra events needed to cover it', val: eventsNeeded > 0 ? eventsNeeded+' events' : '—' },
-      ].map(r=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
-        <span style="color:var(--muted2)">${r.label}</span>
-        <span style="font-weight:600;font-family:'JetBrains Mono',monospace">${r.val}</span>
-      </div>`).join('')}
-      <div style="margin-top:8px;padding:10px;border-radius:7px;background:${canAfford?'var(--greenbg)':'var(--redbg)'};border:1px solid ${canAfford?'var(--greenborder)':'var(--redborder)'}">
-        <div style="font-size:12px;font-weight:600;color:${canAfford?'var(--green)':'var(--red)'}">${canAfford?'✓ Current revenue can support this hire':'⚠ Need more revenue to afford this hire'}</div>
-        <div style="font-size:11px;color:var(--muted2);margin-top:4px">${canAfford?'Based on current take-home vs salary goal':'Based on current take-home vs salary goal + hire cost'}</div>
-      </div>
-    </div>
-  `;
-}
-
-function calcPricing() {
-  const salary = +(document.getElementById('pc-salary')?.value)||FIN.ownSalaryGoal;
-  const evts   = +(document.getElementById('pc-events')?.value)||50;
-  const contrs = +(document.getElementById('pc-contrs')?.value)||1;
-  const hrs    = +(document.getElementById('pc-hrs')?.value)||8;
-  const res    = document.getElementById('pc-result');
-  if (!res) return;
-
-  loadFin();
-  // Work backwards: salary = (revenue - contrCost - expenses) * (1 - taxRate)
-  // revenue = (salary / (1-taxRate) + expenses) / (1 - contrCostRatio)
-  const contrCostPerEvent = contrs * hrs * 100;
-  const grossNeeded       = (salary / (1 - FIN.taxRate)) + FIN.annualExpenses;
-  const revenuePerEvent   = (grossNeeded / evts) + contrCostPerEvent;
-  const currentAvg        = avgPerEventCalc();
-  const gap               = revenuePerEvent - currentAvg;
-
-  res.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px">
-      ${[
-        { label:'Min revenue per event', val:'$'+Math.round(revenuePerEvent).toLocaleString(), note:'To hit your take-home goal', color:'var(--gold)' },
-        { label:'Contractor cost per event', val:'$'+contrCostPerEvent.toLocaleString(), note:contrs+' contractor(s) × '+hrs+'hrs × $100', color:'var(--amber)' },
-        { label:'Your cut per event', val:'$'+Math.round(revenuePerEvent-contrCostPerEvent).toLocaleString(), note:'Before expenses & tax', color:'var(--green)' },
-        { label:'vs. current pricing', val: currentAvg>0?(gap>0?'⚠ +$'+Math.round(gap)+' needed':'✓ $'+Math.round(Math.abs(gap))+' buffer'):'No data yet', note: currentAvg>0?(gap>0?'You need to raise prices':'Current pricing is sufficient'):'Book events to compare', color: currentAvg>0?(gap>0?'var(--red)':'var(--green)'):'var(--muted)' },
-      ].map(t=>`
-        <div>
-          <div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">${t.label}</div>
-          <div style="font-family:'Cormorant',serif;font-size:22px;color:${t.color}">${t.val}</div>
-          <div style="font-size:11px;color:var(--muted2);margin-top:2px">${t.note}</div>
-        </div>
-      `).join('')}
-    </div>
-  `;
-}
+// (calcPricing removed 2026-07-04 — dead code, zero callers)
 
 // ── HONEYBOOK IMPORT DATA (lazy-loaded on first use) ──────────────────────────────────────
 let _hbDataCache = null;
@@ -5212,69 +5187,9 @@ function takeHomeCalc() {
 
 // ════════════════════════════════ RETAINER / AD HOC / HISTORICAL ════════════════════════════════
 
-async function saveRetainer() {
-  const client = document.getElementById('ret-client').value.trim();
-  const income = +(document.getElementById('ret-income').value)||0;
-  const cost   = +(document.getElementById('ret-cost').value)||0;
-  const month  = document.getElementById('ret-month').value;
-  const notes  = document.getElementById('ret-notes').value.trim();
-  if (!client || !month) { toast('Please enter client name and month.'); return; }
-  if (!income) { toast('Please enter the income amount.'); return; }
-  const id = 'ret_'+Date.now();
-  DATA.retainerIncome = DATA.retainerIncome || [];
-  DATA.retainerIncome.push({ id, client, income, cost, month, notes });
-  localStorage.setItem('itm_retainer', JSON.stringify(DATA.retainerIncome));
-  // Also persist to ITM_Financials sheet
-  try {
-    await apiCall('saveFinancial', {
-      id: id, date: month + '-01', client: client,
-      eventType: 'Retainer', grossAmount: income,
-      hbFees: 0, travelFee: 0, deposit: income, balanceDue: 0, paid: true,
-      contractorPay: cost, source: 'retainer', notes: notes
-    });
-  } catch(e) { console.warn('Could not persist retainer to sheet:', e); }
-  document.getElementById('ret-client').value = '';
-  document.getElementById('ret-income').value = '';
-  document.getElementById('ret-cost').value = '';
-  document.getElementById('ret-month').value = '';
-  document.getElementById('ret-notes').value = '';
-  toast('Retainer income logged ✓');
-  renderFinancials();
-}
+// (saveRetainer removed 2026-07-04 — dead code, zero callers)
 
-async function saveAdHoc() {
-  const contractorId = document.getElementById('adhoc-contractor').value;
-  const type         = document.getElementById('adhoc-type').value;
-  const amount       = +(document.getElementById('adhoc-amount').value)||0;
-  const date         = document.getElementById('adhoc-date').value;
-  const notes        = document.getElementById('adhoc-notes').value.trim();
-  if (!contractorId) { toast('Please select a contractor.'); return; }
-  if (!amount) { toast('Please enter an amount.'); return; }
-  if (!date) { toast('Please enter the date paid.'); return; }
-  const id = 'smahoc_'+Date.now();
-  DATA.adHocPayments = DATA.adHocPayments || [];
-  DATA.adHocPayments.push({ id, contractorId, type, amount, date, notes });
-  localStorage.setItem('itm_adhoc', JSON.stringify(DATA.adHocPayments));
-  // Also persist to ITM_Payments sheet
-  try {
-    var payment = {
-      id: id, contractorId: contractorId,
-      eventId: 'adhoc_' + date, event: type + (notes ? ' — ' + notes : ''),
-      eventDate: date, hours: 0, travelShare: 0,
-      amount: amount, date: date, method: 'Ad Hoc'
-    };
-    await apiCall('savePayment', payment);
-    DATA.payments = DATA.payments || [];
-    DATA.payments.push(payment);
-  } catch(e) { console.warn('Could not persist ad-hoc payment to sheet:', e); }
-  document.getElementById('adhoc-contractor').value = '';
-  document.getElementById('adhoc-amount').value = '';
-  document.getElementById('adhoc-date').value = '';
-  document.getElementById('adhoc-notes').value = '';
-  toast('Ad hoc payment logged ✓');
-  renderFinancials();
-  renderContractors();
-}
+// (saveAdHoc removed 2026-07-04 — dead code, zero callers)
 
 // ── CSV IMPORT ────────────────────────────────────────────────
 let _csvParsed = [];
@@ -5924,7 +5839,7 @@ function renderAssignModal(ev) {
           <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${assigned.length===2?`Contractor ${i+1}`:'Primary Contractor'}</div>
           <select class="field-select" style="width:100%;margin-bottom:8px" onchange="updateAssignment('${ev.id}',${i},'contractorId',this.value)">
             <option value="">— Select contractor —</option>
-            ${DATA.contractors.map(c=>`<option value="${c.id}" ${a.contractorId===c.id?'selected':''}>${c.name}</option>`).join('')}
+            ${activeContractors().map(c=>`<option value="${c.id}" ${a.contractorId===c.id?'selected':''}>${c.name}</option>`).join('')}
           </select>
           ${assigned.length===2?`
           <div>
@@ -6043,7 +5958,7 @@ function openPayModal(preselectContractorId) {
   // Populate contractor dropdown
   const sel = document.getElementById('pay-contractor');
   sel.innerHTML = '<option value="">— Select contractor —</option>' +
-    DATA.contractors.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+    activeContractors().map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
   if (preselectContractorId) sel.value = preselectContractorId;
 
   // Reset steps
@@ -6208,6 +6123,18 @@ async function savePayment() {
     } catch(e) { /* non-critical */ }
   }
 
+  // SINGLE SOURCE OF TRUTH: logging a payment also checks the Financials paid
+  // checklist, so "Owed to Contractors" clears everywhere — not just the Team tab.
+  try {
+    const cName = ((DATA.contractors||[]).find(c=>c.id===_payContext.contractorId)||{}).name || '';
+    const key = checklistKeyFor(_payContext.ev, cName);
+    if (key) {
+      const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid')||'{}');
+      paidLog[key] = { date, method };
+      localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
+    }
+  } catch(e) { /* non-critical */ }
+
   saveCfg();
   renderContractors();
   renderFinancials();
@@ -6272,10 +6199,12 @@ function renderSettings() {
   document.getElementById('s-availTabName').value = CFG.availTabName||'Team Availability';
 
   document.getElementById('team-settings').innerHTML = DATA.contractors.map((c,i)=>`
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <input class="cfg-input" value="${c.name}" onchange="updateContractor(${i},'name',this.value)" style="flex:1">
-      <input class="cfg-input" value="${c.role}" onchange="updateContractor(${i},'role',this.value)" style="flex:1">
-      <button class="btn btn-outline" onclick="removeContractor(${i})" style="padding:6px 10px;flex-shrink:0">✕</button>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;${c.active===false?'opacity:.55':''}">
+      <input class="cfg-input" value="${escHtml(c.name)}" onchange="updateContractor(${i},'name',this.value)" style="flex:1">
+      <input class="cfg-input" value="${escHtml(c.role||'')}" onchange="updateContractor(${i},'role',this.value)" style="flex:1">
+      ${c.active===false
+        ? `<span style="font-size:10px;color:var(--muted);white-space:nowrap">off team</span><button class="btn btn-outline" onclick="setContractorActive('${c.id}',true)" style="padding:6px 10px;flex-shrink:0" title="Back on the team">↩</button>`
+        : `<button class="btn btn-outline" onclick="removeContractor(${i})" style="padding:6px 10px;flex-shrink:0" title="Take off the team (history kept)">✕</button>`}
     </div>`).join('');
 
   document.getElementById('booked-dates-list').innerHTML = DATA.bookedDates.map((b,i)=>`
@@ -6305,9 +6234,31 @@ function clearSettings() {
   location.reload();
 }
 
-function updateContractor(i,field,val) { DATA.contractors[i][field]=val; saveCfg(); }
-function removeContractor(i) { DATA.contractors.splice(i,1); saveCfg(); renderSettings(); renderContractors(); }
-function addContractor() { DATA.contractors.push({id:'c'+Date.now(),name:'New Contractor',role:'Shooter'}); saveCfg(); renderSettings(); renderContractors(); }
+function updateContractor(i,field,val) { DATA.contractors[i][field]=val; persistRoster(); }
+// "Remove" = deactivate, never delete — pay history and past events must survive.
+function removeContractor(i) {
+  const c = DATA.contractors[i];
+  if (!c) return;
+  if (!confirm(`Take ${c.name} off the team?\n\nThey'll stop counting for availability and new events. All their past pay and events stay on record. You can reactivate anytime.`)) return;
+  c.active = false;
+  persistRoster(); renderSettings(); renderContractors();
+}
+function setContractorActive(id, active) {
+  const c = (DATA.contractors||[]).find(x=>x.id===id);
+  if (!c) return;
+  c.active = !!active;
+  persistRoster(); renderSettings(); renderContractors();
+  toast(active ? `✓ ${c.name} is back on the team` : `${c.name} removed from the team`);
+}
+function addContractor() {
+  const name = prompt('New team member\'s full name:');
+  if (!name || !name.trim()) return;
+  const role = prompt('Role (e.g. Shooter):', 'Shooter') || 'Shooter';
+  const maxN = Math.max(6, ...DATA.contractors.map(c=>parseInt(String(c.id).replace(/\D/g,''))||0));
+  DATA.contractors.push({ id:'c'+(maxN+1), name:name.trim(), role:role.trim(), isOwner:false, active:true });
+  persistRoster(); renderSettings(); renderContractors();
+  toast(`✓ ${name.trim()} added to the team`);
+}
 function addBookedDate() {
   const d = document.getElementById('new-booked-date').value;
   const l = document.getElementById('new-booked-label').value;
@@ -7681,26 +7632,33 @@ function renderEvents() {
   const upcoming  = active.filter(r => (r.date||'') >= todayStr);
   const pipeline  = upcoming.reduce((s,r) => s+(parseFloat(r.grossAmount)||0), 0);
   const outstanding = upcoming.reduce((s,r) => s+(parseFloat(r.balanceDue)||0), 0);
-  const needsDelivery = active.filter(r => { const p=delProgress(r); return r.date<todayStr && p.done<p.total; }).length;
+  const needsDeliveryRows = active.filter(r => { const p=delProgress(r); return r.date<todayStr && p.done<p.total; });
+  const needsDelivery = needsDeliveryRows.length;
+
+  const evRow = r => ({ name:r.client, eventDate:r.date||r.eventDate, eventType:r.eventType, grossAmount:parseFloat(r.grossAmount)||0, balanceDue:parseFloat(r.balanceDue)||0, paid:!!r.paid });
+  setDrill('evtUpcoming', 'Upcoming Events', upcoming.map(evRow), 'events');
+  setDrill('evtPipeline', 'Pipeline Revenue — Upcoming Events', upcoming.map(evRow), 'events');
+  setDrill('evtNeedsDelivery', 'Past Events With Incomplete Deliverables', needsDeliveryRows.map(evRow), 'events');
+  setDrill('evtCompleted', 'Completed Events (30+ days ago)', completed.map(evRow), 'events');
 
   document.getElementById('events-content').innerHTML = `
   <div class="stats-row" style="margin-bottom:16px">
-    <div class="stat-card gold" style="cursor:pointer" onclick="evtFilter='active';renderEvents()">
+    <div class="stat-card gold" style="cursor:pointer" onclick="openDrill('evtUpcoming')">
       <div class="stat-lbl">Upcoming Events</div>
       <div class="stat-val">${upcoming.length}</div>
-      <div class="stat-sub">in next 30+ days</div>
+      <div class="stat-sub">tap to view</div>
     </div>
-    <div class="stat-card" style="background:var(--s2)">
+    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="openDrill('evtPipeline')">
       <div class="stat-lbl">Pipeline Revenue</div>
       <div class="stat-val" style="color:var(--cream)">$${Math.round(pipeline/1000*10)/10}k</div>
       <div class="stat-sub">from upcoming events</div>
     </div>
-    <div class="stat-card ${needsDelivery>0?'amber':'green'}">
+    <div class="stat-card ${needsDelivery>0?'amber':'green'}" style="cursor:pointer" onclick="openDrill('evtNeedsDelivery')">
       <div class="stat-lbl">Deliveries Pending</div>
       <div class="stat-val">${needsDelivery}</div>
       <div class="stat-sub">past events incomplete</div>
     </div>
-    <div class="stat-card" style="background:var(--s2)">
+    <div class="stat-card" style="background:var(--s2);cursor:pointer" onclick="openDrill('evtCompleted')">
       <div class="stat-lbl">Completed Events</div>
       <div class="stat-val" style="color:var(--cream)">${completed.length}</div>
       <div class="stat-sub">more than 30 days ago</div>
@@ -7755,7 +7713,7 @@ function renderEvents() {
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="font-size:11px;color:${progColor}">${prog.total>2?prog.done+'/'+prog.total+' delivered':prog.hasPkg?(isPast?'Track deliverables':'Upcoming'):isPast?'Set package to track':'Upcoming'}</span>
-            <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openDeliverableModal('${r.id}','${(r.client||'').replace(/'/g,"\\'")}')">📋 Deliverables</button>
+            <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openDeliverableModal('${r.id}','${escJs(r.client||'')}')">📋 Deliverables</button>
             <button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openFinEdit('${r.id}')">✏ Edit</button>
             <button class="btn btn-outline" style="font-size:10px;padding:2px 8px;color:var(--red)" data-did="${r.id}" data-dname="${(r.client||'').replace(/"/g,'&quot;')}" onclick="deleteRegularEvent(this.dataset.did,this.dataset.dname)">✕</button>
           </div>
@@ -7771,85 +7729,8 @@ function renderEvents() {
 }
 
 
-function openEventDetail(eventId) {
-  const e = DATA.events.find(ev => ev.id === eventId);
-  if (!e) return;
-  const assignments = (DATA.assignments||[]).filter(a => a.eventId === eventId);
-  const payments    = (DATA.payments||[]).filter(p => p.eventId === eventId);
-  const gross = (e.contractValue||0);
-  const bal   = e.balance || 0;
-  const dep   = e.deposit || 0;
-
-  const overlay = document.createElement('div');
-  overlay.id = 'event-detail-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
-  overlay.innerHTML = `
-    <div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:28px;width:560px;max-width:100%;max-height:90vh;overflow-y:auto">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
-        <div>
-          <div style="font-family:'Cormorant',serif;font-size:26px;color:var(--cream)">${e.client}</div>
-          <div style="font-size:12px;color:var(--muted2)">${e.eventType||'Event'}${e.eventDate?' · '+new Date(e.eventDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}):''}${e.location?' · '+e.location:''}</div>
-        </div>
-        <button onclick="document.getElementById('event-detail-overlay').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0">✕</button>
-      </div>
-
-      <!-- FINANCIALS -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
-        ${[
-          { label:'Contract Value', val:'$'+Math.round(gross).toLocaleString(), color:'var(--gold)' },
-          { label:'Deposit Paid', val:'$'+Math.round(dep).toLocaleString(), color: dep>0?'var(--green)':'var(--red)' },
-          { label:'Balance Due', val:'$'+Math.round(bal).toLocaleString(), color: bal===0?'var(--green)':'var(--amber)' },
-        ].map(s=>`<div style="background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
-          <div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;margin-bottom:4px">${s.label}</div>
-          <div style="font-family:'Cormorant',serif;font-size:22px;color:${s.color}">${s.val}</div>
-        </div>`).join('')}
-      </div>
-
-      ${bal > 0 ? `
-      <div style="display:flex;gap:10px;margin-bottom:16px">
-        <button class="btn btn-gold" style="flex:1" onclick="markInvoicePaid('${e.id}');document.getElementById('event-detail-overlay').remove()">✓ Mark Fully Paid</button>
-      </div>` : ''}
-
-      <!-- TEAM -->
-      <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">Team Assigned</div>
-        ${assignments.length ? assignments.map(a=>`
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-            <span style="color:var(--cream)">${a.contractorName||a.contractorId}</span>
-            <span style="font-size:11px;color:var(--muted2)">${a.hours||'?'} hrs</span>
-          </div>`).join('') : `<div style="color:var(--muted);font-size:12px">No one assigned yet — <span style="color:var(--gold);cursor:pointer" onclick="document.getElementById('event-detail-overlay').remove();openAssignModal('${e.id}')">assign team</span></div>`}
-        <button class="btn btn-outline" style="margin-top:8px;font-size:11px;padding:4px 10px" onclick="document.getElementById('event-detail-overlay').remove();openAssignModal('${e.id}')">+ Assign Contractor</button>
-      </div>
-
-      <!-- PAYMENTS -->
-      ${payments.length ? `
-      <div>
-        <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">Contractor Payments</div>
-        ${payments.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
-          <span style="color:var(--cream)">${p.contractorName||p.contractorId}</span>
-          <span style="color:var(--gold)">$${(parseFloat(p.amount)||0).toLocaleString()}</span>
-          <span style="color:${p.venmoSent||p.paid?'var(--green)':'var(--amber)'}">${p.venmoSent||p.paid?'✓ Venmo sent':'Pending'}</span>
-        </div>`).join('')}
-      </div>` : ''}
-
-      ${e.notes && e.notes !== 'Imported from HoneyBook' ? `
-      <div style="margin-top:16px;padding:12px;background:var(--s1);border-radius:8px;font-size:12px;color:var(--muted2);font-style:italic">${e.notes}</div>` : ''}
-
-      <!-- DELIVERABLES -->
-      <div style="margin-top:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em">Deliverables</div>
-          <button class="btn btn-outline" style="font-size:10px;padding:3px 8px" onclick="addDeliverable('${e.id}')">+ Add</button>
-        </div>
-        <div id="deliverables-${e.id}">
-          <div style="color:var(--muted);font-size:12px;padding:8px 0">Loading...</div>
-        </div>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
-  loadDeliverables(e.id);
-}
+// (openEventDetail removed 2026-07-03 — dead code that called undefined loadDeliverables/addDeliverable;
+// event details live in the Events tab + financial edit modal.)
 function openNewEventModal() {
   const overlay = document.createElement('div');
   overlay.id = 'new-event-overlay';
@@ -8213,17 +8094,7 @@ function renderGmailDetail(thread) {
   `;
 }
 
-async function gmailAiDraft() {
-  const { thread } = GMAIL_STATE.currentThread || {};
-  if (!thread) { toast('⚠ No email selected'); return; }
-  const messages = thread.messages || [];
-  const history = messages.map(m => `From: ${m.from}\n${m.body}`).join('\n\n---\n\n');
-  const prompt = `You are Lauren Nava, owner of In The Moment LLC, a wedding and event social media content creation business in Washington DC. Draft a warm, professional reply to this email thread. Write ONLY the reply body — no subject line, no preamble. Sign off as:\n\nXoxo Lauren\nIn The Moment LLC\ninthemomentcreationco@gmail.com\n\nSubject: ${thread.subject || ''}\n\nEmail thread:\n${history}`;
-  const url = 'https://claude.ai/new?q=' + encodeURIComponent(prompt);
-  window.open(url, '_blank');
-  const statusEl = document.getElementById('gmail-reply-status');
-  if (statusEl) statusEl.textContent = '✦ Claude.ai opened — copy the reply back here';
-}
+// (gmailAiDraft removed 2026-07-04 — dead code, zero callers)
 
 async function gmailSendReply() {
   const { replyTo, replySubject, thread } = GMAIL_STATE.currentThread || {};
@@ -8308,6 +8179,21 @@ function renderDeliverables() {
   var totalDone = dels.filter(function(d) { return d.status === 'done'; }).length;
   var pendingTasks = (DATA.tasks||[]).filter(function(t) { return t.status !== 'done'; }).length;
 
+  // Drill-downs for the stat tiles
+  var _finById = {}; allFin.forEach(function(r){ _finById[r.id] = r; });
+  var delRow = function(d, stage) {
+    var ev = _finById[d.eventId] || {};
+    return { name: (ev.client||d.client||'—') + ' — ' + (d.label||d.type||'item'), eventDate: d.dueDate||ev.date||'', eventType: ev.eventType||'', budget: d.assignee||'', stage: stage };
+  };
+  setDrill('delOverdue', 'Overdue Deliverables',
+    dels.filter(function(d){ return d.status !== 'done' && d.dueDate && d.dueDate < todayStr; }).map(function(d){ return delRow(d,'overdue'); }), 'inquiries');
+  setDrill('delPending', 'Pending Deliverables',
+    dels.filter(function(d){ return d.status !== 'done'; }).map(function(d){ return delRow(d,'pending'); }), 'inquiries');
+  setDrill('delDone', 'Completed Deliverables',
+    dels.filter(function(d){ return d.status === 'done'; }).map(function(d){ return delRow(d,'done'); }), 'inquiries');
+  setDrill('delEvents', 'Events With Deliverables',
+    eventCards.map(function(c){ return { name:c.client, eventDate:c.date, eventType:c.eventType, grossAmount:0, balanceDue:0, paid:c.done===c.total }; }), 'events');
+
   el.innerHTML = ''
     + '<div style="display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid var(--border)">'
     + '  <button style="padding:10px 20px;font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:' + (delView !== 'tasks' ? 'var(--gold)' : 'var(--muted)') + ';border-bottom:2px solid ' + (delView !== 'tasks' ? 'var(--gold)' : 'transparent') + ';margin-bottom:-2px;transition:all .2s" onclick="delView=\'overview\';renderDeliverables()">Event Deliverables</button>'
@@ -8315,10 +8201,10 @@ function renderDeliverables() {
     + '</div>'
 
     + '<div class="stats-row" style="margin-bottom:16px">'
-    + '  <div class="stat-card ' + (totalOverdue > 0 ? 'red' : 'green') + '"><div class="stat-lbl">Overdue</div><div class="stat-val">' + totalOverdue + '</div><div class="stat-sub">past due date</div></div>'
-    + '  <div class="stat-card amber"><div class="stat-lbl">Pending</div><div class="stat-val">' + totalPending + '</div><div class="stat-sub">items to complete</div></div>'
-    + '  <div class="stat-card green"><div class="stat-lbl">Completed</div><div class="stat-val">' + totalDone + '</div><div class="stat-sub">delivered</div></div>'
-    + '  <div class="stat-card"><div class="stat-lbl">Events Tracked</div><div class="stat-val">' + eventCards.length + '</div><div class="stat-sub">with deliverables</div></div>'
+    + '  <div class="stat-card ' + (totalOverdue > 0 ? 'red' : 'green') + '" style="cursor:pointer" onclick="openDrill(\'delOverdue\')"><div class="stat-lbl">Overdue</div><div class="stat-val">' + totalOverdue + '</div><div class="stat-sub">past due date</div></div>'
+    + '  <div class="stat-card amber" style="cursor:pointer" onclick="openDrill(\'delPending\')"><div class="stat-lbl">Pending</div><div class="stat-val">' + totalPending + '</div><div class="stat-sub">items to complete</div></div>'
+    + '  <div class="stat-card green" style="cursor:pointer" onclick="openDrill(\'delDone\')"><div class="stat-lbl">Completed</div><div class="stat-val">' + totalDone + '</div><div class="stat-sub">delivered</div></div>'
+    + '  <div class="stat-card" style="cursor:pointer" onclick="openDrill(\'delEvents\')"><div class="stat-lbl">Events Tracked</div><div class="stat-val">' + eventCards.length + '</div><div class="stat-sub">with deliverables</div></div>'
     + '</div>'
 
     + '<div class="del-view-tabs">'
@@ -8989,6 +8875,12 @@ async function deleteTask(taskId) {
 function escHtml(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+// For interpolating a value into a JS string inside an onclick="" attribute:
+// escapes backslashes + single quotes for the JS string, and double quotes as
+// &quot; so the value can't terminate the HTML attribute.
+function escJs(str) {
+  return String(str ?? '').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
 }
 function toast(msg) {
   const t = document.getElementById('toast');
