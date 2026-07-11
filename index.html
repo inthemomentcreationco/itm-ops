@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-04-b  (team add/remove w/ history · paid-checklist unification · tile drill-downs · audit fixes) -->
+<!-- VERSION: 2026-07-08-a  (availability grid: pageable window — ‹ › month jump to hold far-out dates, not just next 45d) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3021,23 +3021,59 @@ async function bookInquiry(id) {
 }
 
 // ════════════════════════════════ CONTRACTORS ════════════════════════════════
+// ── Availability grid window paging ──
+// The grid renders AVAIL_WINDOW_DAYS columns starting availWindowStart days from
+// today, so Lauren can page/jump months ahead to hold far-out dates (not just 45d).
+var availWindowStart = 0;
+var AVAIL_WINDOW_DAYS = 45;
+function shiftAvailWindow(delta) {
+  availWindowStart = Math.max(0, availWindowStart + delta);
+  renderContractors();
+}
+function jumpAvailWindow(monthVal) {
+  var today = new Date(); today.setHours(0,0,0,0);
+  if (monthVal === 'today') { availWindowStart = 0; renderContractors(); return; }
+  var parts = String(monthVal).split('-'); // 'YYYY-MM'
+  if (parts.length < 2) return;
+  var target = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+  var diff = Math.round((target - today) / 86400000);
+  availWindowStart = Math.max(0, diff);
+  renderContractors();
+}
+
 function buildAvailOverview() {
   var today = new Date();
   var todayStr = today.toISOString().split('T')[0];
   var avail = DATA.availability || [];
   var team = activeContractors();
 
-  // Build next 45 days
+  // Build AVAIL_WINDOW_DAYS days starting availWindowStart days from today
+  var startBase = new Date(today);
+  startBase.setDate(startBase.getDate() + availWindowStart);
   var days = [];
-  for (var i = 0; i < 45; i++) {
-    var d = new Date(today);
+  for (var i = 0; i < AVAIL_WINDOW_DAYS; i++) {
+    var d = new Date(startBase);
     d.setDate(d.getDate() + i);
     days.push(d.toISOString().split('T')[0]);
   }
+  var rangeLabel = new Date(days[0] + 'T12:00:00').toLocaleDateString('en-US', { month:'short', day:'numeric' })
+    + ' – ' + new Date(days[days.length-1] + 'T12:00:00').toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+  var monthVal = days[0].slice(0, 7);
+  var navBtn = 'btn btn-outline';
+  var navStyle = 'padding:4px 10px;font-size:13px;line-height:1';
 
   // Header row with dates
   var html = '<div style="margin-bottom:24px">'
-    + '<div class="sec-label" style="margin-bottom:12px">Team Availability — Next 45 Days</div>'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+    +   '<div class="sec-label" style="margin:0">Team Availability</div>'
+    +   '<div style="display:flex;align-items:center;gap:6px;margin-left:auto">'
+    +     '<button class="' + navBtn + '" style="' + navStyle + (availWindowStart <= 0 ? ';opacity:.4;cursor:not-allowed' : '') + '" onclick="shiftAvailWindow(-' + AVAIL_WINDOW_DAYS + ')"' + (availWindowStart <= 0 ? ' disabled' : '') + '>‹</button>'
+    +     '<span style="font-size:11px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;min-width:150px;text-align:center">' + rangeLabel + '</span>'
+    +     '<button class="' + navBtn + '" style="' + navStyle + '" onclick="shiftAvailWindow(' + AVAIL_WINDOW_DAYS + ')">›</button>'
+    +     '<input type="month" value="' + monthVal + '" onchange="jumpAvailWindow(this.value)" style="font-size:11px;padding:4px 6px;border:1px solid var(--border2);border-radius:6px;background:var(--s3);color:var(--cream);color-scheme:dark">'
+    +     (availWindowStart > 0 ? '<button class="' + navBtn + '" style="' + navStyle + '" onclick="jumpAvailWindow(\x27today\x27)">Today</button>' : '')
+    +   '</div>'
+    + '</div>'
     + '<div style="overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--s2)">'
     + '<table style="border-collapse:collapse;width:100%;min-width:' + (120 + days.length * 36) + 'px">'
     + '<thead><tr><th style="position:sticky;left:0;background:var(--s2);z-index:2;padding:8px 12px;text-align:left;font-size:11px;color:var(--muted);font-family:\'JetBrains Mono\',monospace;border-bottom:1px solid var(--border);min-width:120px">Team Member</th>';
