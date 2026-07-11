@@ -233,6 +233,28 @@ body {
   font-size: 14px;
 }
 .error-msg strong { color: var(--red); }
+.ev-section {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--muted2); margin: 18px 0 8px;
+}
+.ev-card {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 10px; margin-bottom: 8px; padding: 12px 14px;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; transition: border-color 0.15s;
+}
+.ev-card.open { border-color: var(--border2); }
+.ev-card:active { transform: scale(0.995); }
+.ev-head { display: flex; align-items: center; gap: 12px; }
+.ev-client {
+  font-family: 'Cormorant', serif; font-size: 17px; font-weight: 600; color: var(--cream);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ev-meta { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.ev-chevron { flex: none; font-size: 14px; color: var(--muted2); }
+.ev-detail { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.ev-drow { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+.ev-dlabel { color: var(--muted); }
+.ev-dval { color: var(--cream); text-align: right; }
 </style>
 </head>
 <body>
@@ -265,6 +287,10 @@ var savedDates = {};   // date -> status from server
 var pendingChanges = {}; // date -> status (unsaved)
 var viewMonth = new Date();
 viewMonth.setDate(1);
+var currentTab = 'avail';     // 'avail' | 'events'
+var myEvents = null;          // lazy-loaded list from getEventsForToken
+var eventsError = '';
+var expandedEvent = -1;       // index of expanded event row
 
 function toast(msg) {
   var t = document.getElementById('toast');
@@ -304,6 +330,113 @@ async function init() {
 }
 
 function render() {
+  var html = welcomeHtml() + navHtml();
+  html += '<div id="tab-body">' + (currentTab === 'events' ? eventsHtml() : availHtml()) + '</div>';
+  document.getElementById('app').innerHTML = html;
+  // Save bar only makes sense on the availability tab
+  document.getElementById('status-bar').style.display = currentTab === 'avail' ? 'flex' : 'none';
+  if (currentTab === 'avail') updateStatusBar();
+}
+
+function welcomeHtml() {
+  return '<div class="welcome">'
+    + '<div class="welcome-name">' + esc(memberName) + '</div>'
+    + '<div class="welcome-role">' + esc(memberRole) + '</div>'
+    + '</div>';
+}
+
+function navHtml() {
+  return '<div class="nav-row">'
+    + '<button class="nav-btn' + (currentTab === 'avail' ? ' active' : '') + '" onclick="switchTab(\'avail\')">📅 My Availability</button>'
+    + '<button class="nav-btn' + (currentTab === 'events' ? ' active' : '') + '" onclick="switchTab(\'events\')">📸 My Events</button>'
+    + '</div>';
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  render();
+  if (tab === 'events' && myEvents === null && !eventsError) loadEvents();
+}
+
+async function loadEvents() {
+  try {
+    var result = await apiCall('getEventsForToken', { token: TOKEN });
+    myEvents = (result && result.events) || [];
+  } catch (e) {
+    eventsError = e.message || 'Could not load events';
+    myEvents = [];
+  }
+  if (currentTab === 'events') render();
+}
+
+function toggleEvent(i) {
+  expandedEvent = (expandedEvent === i ? -1 : i);
+  render();
+}
+
+function eventsHtml() {
+  if (myEvents === null) {
+    return '<div class="error-msg" style="padding:40px 20px">Loading your events…</div>';
+  }
+  if (eventsError) {
+    return '<div class="error-msg"><strong>Could not load your events.</strong><br><br>' + esc(eventsError) + '</div>';
+  }
+  var today = new Date().toISOString().split('T')[0];
+  var upcoming = myEvents.filter(function(e) { return e.date >= today; });
+  var past     = myEvents.filter(function(e) { return e.date <  today; }).reverse();
+
+  var html = '<div style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:14px">Events you\'re booked for. Tap one for the details.</div>';
+
+  if (!myEvents.length) {
+    return html + '<div class="error-msg" style="padding:40px 20px">No events assigned to you yet.<br><br><span style="font-size:12px">Once Lauren adds you to an event in the books, it\'ll show up here.</span></div>';
+  }
+
+  html += '<div style="margin-bottom:16px;padding:14px;background:var(--s2);border-radius:10px;border:1px solid var(--border);display:flex;justify-content:space-around;text-align:center">'
+    + '<div><div style="font-size:18px;color:var(--gold);font-weight:600">' + upcoming.length + '</div><div style="font-size:10px;color:var(--muted)">Upcoming</div></div>'
+    + '<div><div style="font-size:18px;color:var(--muted);font-weight:600">' + past.length + '</div><div style="font-size:10px;color:var(--muted)">Past</div></div>'
+    + '</div>';
+
+  if (upcoming.length) {
+    html += '<div class="ev-section">Upcoming</div>';
+    upcoming.forEach(function(e) { html += eventRow(e, myEvents.indexOf(e)); });
+  }
+  if (past.length) {
+    html += '<div class="ev-section">Past</div>';
+    past.forEach(function(e) { html += eventRow(e, myEvents.indexOf(e)); });
+  }
+  return html;
+}
+
+function eventRow(e, i) {
+  var d = new Date(e.date + 'T12:00:00');
+  var dateLong = isNaN(d.getTime()) ? esc(e.date)
+    : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  var open = (expandedEvent === i);
+  var html = '<div class="ev-card' + (open ? ' open' : '') + '" onclick="toggleEvent(' + i + ')">'
+    + '<div class="ev-head">'
+    + '<div style="min-width:0;flex:1">'
+    + '<div class="ev-client">' + esc(e.client || 'Event') + '</div>'
+    + '<div class="ev-meta">' + dateLong + (e.eventType ? ' · ' + esc(e.eventType) : '') + '</div>'
+    + '</div>'
+    + '<div class="ev-chevron">' + (open ? '▾' : '▸') + '</div>'
+    + '</div>';
+  if (open) {
+    html += '<div class="ev-detail">'
+      + detailRow('Date', dateLong)
+      + (e.eventType ? detailRow('Type', esc(e.eventType)) : '')
+      + (e.planner ? detailRow('Planner', esc(e.planner)) : '')
+      + (e.location ? detailRow('Location', esc(e.location)) : '')
+      + (!e.planner && !e.location ? '<div style="font-size:12px;color:var(--muted2);padding:4px 0">More details coming soon.</div>' : '')
+      + '</div>';
+  }
+  return html + '</div>';
+}
+
+function detailRow(label, val) {
+  return '<div class="ev-drow"><span class="ev-dlabel">' + label + '</span><span class="ev-dval">' + val + '</span></div>';
+}
+
+function availHtml() {
   var today = new Date().toISOString().split('T')[0];
   var year = viewMonth.getFullYear();
   var month = viewMonth.getMonth();
@@ -311,10 +444,7 @@ function render() {
   var firstDay = new Date(year, month, 1).getDay();
   var daysInMonth = new Date(year, month + 1, 0).getDate();
 
-  var html = '<div class="welcome">'
-    + '<div class="welcome-name">' + esc(memberName) + '</div>'
-    + '<div class="welcome-role">' + esc(memberRole) + '</div>'
-    + '</div>';
+  var html = '';
 
   html += '<div class="legend">'
     + '<div class="legend-item"><div class="legend-dot" style="background:var(--redbg);border:1px solid var(--red)"></div> Unavailable</div>'
@@ -366,8 +496,7 @@ function render() {
     + '<div><div style="font-size:18px;color:var(--amber);font-weight:600">' + freeCount + '</div><div style="font-size:10px;color:var(--muted)">On Hold</div></div>'
     + '</div>';
 
-  document.getElementById('app').innerHTML = html;
-  updateStatusBar();
+  return html;
 }
 
 function toggleDate(dateStr) {
