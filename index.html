@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-11-a  (availability grid: pageable window — ‹ › month jump to hold far-out dates, not just next 45d) -->
+<!-- VERSION: 2026-07-11-d  (Session 14: 1-call getAllData load + instant-paint cache · wider calendar & bigger boxes · click any day to expand · inquiry age in detail · Prospective grouped by month · staleness = near event + old inquiry (drops from Recommended) · Team pay history grouped by person) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -395,14 +395,15 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--cream);min
 .cal-dow-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:var(--s1);border-bottom:1px solid var(--border)}
 .cal-dow{padding:8px 4px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted)}
 .cal-body{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-rows:1fr}
-.cal-cell{min-height:96px;min-width:0;overflow:hidden;border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:5px 4px;background:#fff;transition:background .1s;cursor:default;vertical-align:top}
+.cal-cell{min-height:132px;min-width:0;overflow:hidden;border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:6px 6px;background:#fff;transition:background .1s;cursor:default;vertical-align:top}
 .cal-cell:nth-child(7n){border-right:none}
 .cal-cell.other-month .cal-dn{color:var(--muted2);opacity:0.5}
 .cal-cell.other-month{background:rgba(237,232,224,0.4)}
 .cal-cell:hover{background:rgba(139,26,26,0.025)}
 .cal-dn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;color:var(--cream);border-radius:50%;margin-bottom:3px;transition:all .15s}
 .cal-cell.today .cal-dn{background:var(--gold);color:#fff;font-weight:700}
-.cal-pill{font-size:10px;padding:2px 6px;border-radius:4px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'Outfit',sans-serif;line-height:1.4;cursor:pointer;transition:filter .1s}
+.cal-cell-open{background:rgba(139,26,26,0.06)!important;box-shadow:inset 0 0 0 2px var(--gold)}
+.cal-pill{font-size:11.5px;padding:3px 7px;border-radius:5px;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'Outfit',sans-serif;line-height:1.45;cursor:pointer;transition:filter .1s}
 .cal-pill:hover{filter:brightness(0.9)}
 .cal-pill.booked{background:var(--gold);color:#fff}
 .cal-pill.inquiry{background:rgba(139,26,26,0.12);color:var(--gold);border:1px solid rgba(139,26,26,0.2)}
@@ -932,7 +933,7 @@ async function apiCall(action, payload) {
 
   // NOTE: sendEmail intentionally NOT here — it must go via POST so long email
   // bodies don't ride the URL query string (GET URLs have length limits)
-  const readActions = ['getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','getGmailThreads','getGmailThread','aiGmailDraft'];
+  const readActions = ['getAllData','getFinancials','getInquiries','getEvents','getPayments','getExpenses','getAssignments','getContractors','ping','getGmailThreads','getGmailThread','aiGmailDraft'];
   const isRead = readActions.includes(action);
 
   let res;
@@ -998,9 +999,11 @@ async function pushCfgToServer(){
   localStorage.setItem('itm_cfg_ts', String(updatedAt));
   try { await apiCall('setCfg', { cfg, reviewAsked: _reviewLocalMap(), updatedAt }); } catch(e) { /* offline is fine — next save retries */ }
 }
-async function pullCfgFromServer(){
+async function pullCfgFromServer(prefetched){
   try {
-    const r = await apiCall('getCfg', {});
+    // When the combined getAllData bundle is used, its cfg is passed in so we don't
+    // fire a second round-trip just for config.
+    const r = prefetched !== undefined ? prefetched : await apiCall('getCfg', {});
     if(!r || !r.updatedAt) return;
     const localTs = parseInt(localStorage.getItem('itm_cfg_ts')||'0');
     if(r.updatedAt <= localTs) return;              // this device is newer — keep ours
@@ -1062,6 +1065,11 @@ async function init() {
   }
   document.getElementById('setupBanner').style.display = 'none';
   renderSettings();
+  // Instant paint from the last snapshot so the app shows real data immediately while
+  // the network sync runs in the background (mobile no longer looks frozen on open).
+  // The snapshot preserves each inquiry's computed _score/_stars, so renderAll works as-is;
+  // the background sync re-scores against fresh data moments later.
+  if (hydrateFromSnapshot()) { try { renderAll(); } catch(e) { /* stale schema — sync will fix */ } }
   await syncData();
 }
 
@@ -1081,6 +1089,44 @@ function connect() {
   syncData();
 }
 
+// ════════════════════════════════ INSTANT-PAINT CACHE ════════════════════════════════
+// The app used to show nothing until the network sync finished — brutal on mobile, where
+// Hue had to close/reopen the app repeatedly. Now we snapshot the loaded data after every
+// successful sync and paint it instantly on the next open, then refresh in the background.
+const DATA_SNAPSHOT_KEY = 'itm_data_snapshot_v1';
+function saveDataSnapshot(){
+  try {
+    localStorage.setItem(DATA_SNAPSHOT_KEY, JSON.stringify({
+      t: Date.now(),
+      inquiries:        DATA.inquiries || [],
+      events:           DATA.events || [],
+      historicalEvents: DATA.historicalEvents || [],
+      payments:         DATA.payments || [],
+      assignments:      DATA.assignments || [],
+      availability:     DATA.availability || [],
+      expenses:         DATA.expenses || [],
+      deliverables:     DATA.deliverables || [],
+      tasks:            DATA.tasks || [],
+    }));
+  } catch(e) { /* quota or serialization issue — cache is best-effort, ignore */ }
+}
+function hydrateFromSnapshot(){
+  try {
+    const c = JSON.parse(localStorage.getItem(DATA_SNAPSHOT_KEY) || 'null');
+    if(!c || !Array.isArray(c.inquiries) || !c.inquiries.length) return false;
+    DATA.inquiries        = c.inquiries;
+    DATA.events           = c.events || [];
+    DATA.historicalEvents = c.historicalEvents || [];
+    DATA.payments         = c.payments || [];
+    DATA.assignments      = c.assignments || [];
+    DATA.availability     = c.availability || [];
+    DATA.expenses         = c.expenses || [];
+    DATA.deliverables     = c.deliverables || [];
+    DATA.tasks            = c.tasks || [];
+    return true;
+  } catch(e) { return false; }
+}
+
 // ════════════════════════════════ SYNC ════════════════════════════════
 async function syncData() {
   const btn = document.getElementById('syncBtn');
@@ -1089,24 +1135,40 @@ async function syncData() {
 
   let inquiriesLoaded = false;
 
-  // 1+2. Load ALL data in parallel (inquiries + events + payments + etc.)
+  // 1+2. Load ALL data in ONE combined round-trip (getAllData). This replaced 8 separate
+  // cold Apps Script calls — each of which paid the full container spin-up cost — and is
+  // the main mobile-load win. If the backend hasn't been redeployed with getAllData yet,
+  // we fall back to the legacy parallel calls so the dashboard keeps working either way
+  // (safe deploy ordering: push index.html before or after the .gs, no dependency).
   let finData = [];
-  let _events, _payments, _assignments, _availability, _expenses;
+  let rows, _events, _payments, _assignments, _availability, _expenses;
   if (CFG.scriptUrl) {
     try {
-      const [rows, eventsR, paymentsR, assignmentsR, availabilityR, finDataResult, expensesR] = await Promise.all([
-        apiCall('getInquiries'),
-        apiCall('getEvents'),
-        apiCall('getPayments'),
-        apiCall('getAssignments'),
-        apiCall('getAvailability'),
-        apiCall('getFinancials'),
-        apiCall('getExpenses'),
-      ]);
-      await pullCfgFromServer();   // shared settings (goals, plan mode, review link) — last write wins across devices
-      finData = finDataResult || [];
-      _events = eventsR; _payments = paymentsR; _assignments = assignmentsR;
-      _availability = availabilityR; _expenses = expensesR;
+      let bundle = null;
+      try { bundle = await apiCall('getAllData'); } catch(e) { bundle = null; }
+      if (bundle && bundle.inquiries) {
+        rows = bundle.inquiries;
+        _events = bundle.events; _payments = bundle.payments; _assignments = bundle.assignments;
+        _availability = bundle.availability; _expenses = bundle.expenses;
+        finData = bundle.financials || [];
+        await pullCfgFromServer(bundle.cfg);   // apply shared settings from the same payload — no extra call
+      } else {
+        // Legacy path — old backend without getAllData
+        const [rows0, eventsR, paymentsR, assignmentsR, availabilityR, finDataResult, expensesR] = await Promise.all([
+          apiCall('getInquiries'),
+          apiCall('getEvents'),
+          apiCall('getPayments'),
+          apiCall('getAssignments'),
+          apiCall('getAvailability'),
+          apiCall('getFinancials'),
+          apiCall('getExpenses'),
+        ]);
+        await pullCfgFromServer();   // shared settings (goals, plan mode, review link) — last write wins across devices
+        rows = rows0;
+        finData = finDataResult || [];
+        _events = eventsR; _payments = paymentsR; _assignments = assignmentsR;
+        _availability = availabilityR; _expenses = expensesR;
+      }
 
       // Process inquiries
       if (rows && rows.length >= 1) {
@@ -1383,6 +1445,7 @@ async function syncData() {
     } catch(e) { console.warn('Paid log sync failed:', e); }
 
     renderAll();
+    saveDataSnapshot();   // stash a full snapshot so the next open paints instantly (see hydrateFromSnapshot)
     toast(`Synced: ${DATA.inquiries.length} inquiries · ${DATA.events.length} events · ${DATA.historicalEvents ? DATA.historicalEvents.length : 0} financial records`);
   } else {
     btn.textContent = '↻ Sync';
@@ -1897,6 +1960,15 @@ function score(inq) {
   inq._miles     = miles;
   inq._hardFails = hardFails;
   inq._months    = months;
+  // Staleness (Hue's #4): stale only when the event is NEAR and the inquiry is OLD — see the
+  // STALE_* constants for the reasoning. NOT a hard-fail (no auto-decline); it just drops out
+  // of Recommended and gets a "likely gone" flag. Far-future events are never stale, however
+  // old the inquiry, so early-bird leads for next year still surface.
+  inq._ageDays        = inqAgeDays(inq);
+  const _ndStale      = normalizeDate(inq.eventDate);
+  inq._daysUntilEvent = _ndStale ? Math.round((new Date(_ndStale + 'T12:00:00').getTime() - Date.now()) / 86400000) : null;
+  inq._isStale        = inq._ageDays !== null && inq._ageDays > STALE_INQUIRY_DAYS
+                        && inq._daysUntilEvent !== null && inq._daysUntilEvent >= 0 && inq._daysUntilEvent <= STALE_EVENT_NEAR_DAYS;
   inq._conflict  = (avail && (avail.severity==='conflict' || avail.laurenBooked)) || false;
   inq._avail     = avail;
   inq._noPlanner = isWedding && noPlanner;
@@ -2539,6 +2611,7 @@ function openDetail(id) {
       <div>
         <div class="panel-name">${inq.name||'Unnamed Inquiry'}</div>
         <div style="font-size:12px;color:var(--muted2);margin-top:2px">${evtDate} · ${inq.eventType||'Event'}</div>
+        ${(() => { const age=inqAgeDays(inq); if(age===null) return ''; const stale=!!inq._isStale; const col=stale?'var(--red)':age>LATE_REPLY_DAYS?'var(--amber)':'var(--muted2)'; return `<div style="font-size:12px;margin-top:4px;color:${col};font-weight:${stale?600:400}">🕐 Inquired ${inqAgeLabel(inq)}${stale?' — likely booked elsewhere':age>LATE_REPLY_DAYS?' — reply with an apology':''}</div>`; })()}
       </div>
       <button class="panel-close" onclick="closeDetail()">✕</button>
     </div>
@@ -2833,6 +2906,15 @@ const REPLY_SUBJECT = 'Re: Your Inquiry — In The Moment';
 // How long ago did this person inquire? Replying weeks late without acknowledging
 // it is rude — past LATE_REPLY_DAYS the templates switch to an apology variant.
 const LATE_REPLY_DAYS = 14;
+// Staleness = "too late to bother reaching out" (Hue's #4). It's a GAP judgment, not just
+// age: a lead is stale only when BOTH (a) the event is near — within STALE_EVENT_NEAR_DAYS —
+// AND (b) they inquired a while ago (> STALE_INQUIRY_DAYS). So:
+//   • inquired 3mo ago, event next year  → NOT stale (event far, still worth reaching out)
+//   • inquired 3mo ago, event tomorrow    → STALE (old inquiry + imminent event = booked elsewhere)
+//   • Ashley: inquired 9mo ago, event 2wk → STALE.   • Monica: inquired 3wk ago, event ~1.5wk → NOT stale.
+// Stale leads drop out of Recommended and get a "likely gone" flag, but still show in All / calendar.
+const STALE_INQUIRY_DAYS   = 30;   // inquiry older than ~a month
+const STALE_EVENT_NEAR_DAYS = 30;  // AND event within ~a month
 function inqAgeDays(inq){
   const t = inq && inq.timestamp ? new Date(inq.timestamp) : null;
   if(!t || isNaN(t.getTime())) return null;
@@ -3525,26 +3607,51 @@ function renderContractors() {
 
     ${payments.length ? `
     <div class="sec-label" style="margin-top:20px">Payment History</div>
-    <div class="tbl-wrap">
-      <table class="tbl">
-        <thead><tr><th>Date Paid</th><th>Contractor</th><th>Event</th><th>Hours</th><th>Total</th><th>Method</th></tr></thead>
-        <tbody>
-          ${[...payments].reverse().map(p=>{
-            const c = DATA.contractors.find(x=>x.id===p.contractorId);
+    ${renderTeamPayHistory(payments)}` : '<div class="empty" style="margin-top:20px"><div class="empty-icon">💸</div><div class="empty-msg">No payments logged yet. Assign contractors to events first, then use "+ Log Payment".</div></div>'}
+  `;
+}
+
+// Team-page payment history grouped by person (Hue's request — mirrors the Financials tab's
+// per-contractor cards): one collapsible card per shooter with their all-time total, expanding
+// to their individual logged payments newest-first.
+function renderTeamPayHistory(payments){
+  const groups = {};
+  payments.forEach(p=>{ (groups[p.contractorId]=groups[p.contractorId]||[]).push(p); });
+  const ids = Object.keys(groups).sort((a,b)=>{
+    const na=(DATA.contractors.find(x=>x.id===a)||{}).name||'~';
+    const nb=(DATA.contractors.find(x=>x.id===b)||{}).name||'~';
+    return na.localeCompare(nb);
+  });
+  return ids.map(id=>{
+    const c = DATA.contractors.find(x=>x.id===id);
+    const name = c?.name || '—';
+    const rows = groups[id].slice().sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
+    const total = rows.reduce((s,p)=>s+(parseFloat(p.amount)||0),0);
+    const tid = 'tph-'+id;
+    return `<div style="background:var(--card,var(--s2));border:1px solid var(--border);border-radius:var(--r,12px);margin-bottom:10px;overflow:hidden">
+      <div style="padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="var el=document.getElementById('${tid}');el.style.display=el.style.display==='none'?'block':'none'">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-weight:700;color:var(--cream);font-size:15px">${escHtml(name)}</span>
+          <span style="font-size:11px;color:var(--muted2)">${rows.length} payment${rows.length!==1?'s':''}</span>
+        </div>
+        <span style="font-size:13px;font-weight:600;color:var(--gold)">$${Math.round(total).toLocaleString()} paid</span>
+      </div>
+      <div id="${tid}" style="display:none;border-top:1px solid var(--border)">
+        <table class="tbl" style="margin:0"><thead><tr><th>Date Paid</th><th>Event</th><th>Hours</th><th>Amount</th><th>Method</th></tr></thead><tbody>
+          ${rows.map(p=>{
             const methClass = p.method==='Venmo'?'badge-venmo':p.method==='Cash App'?'badge-cash':'badge-hb';
             return `<tr>
-              <td>${p.date}</td>
-              <td>${c?.name||'—'}</td>
-              <td>${p.event||'—'}</td>
-              <td>${p.hours}hrs</td>
-              <td style="font-weight:600;color:var(--gold)">$${p.amount.toLocaleString()}</td>
-              <td><span class="badge ${methClass}">${p.method}</span></td>
+              <td>${escHtml(p.date||'—')}</td>
+              <td>${escHtml(p.event||'—')}</td>
+              <td>${p.hours!=null&&p.hours!==''?escHtml(String(p.hours))+'hrs':'—'}</td>
+              <td style="font-weight:600;color:var(--gold)">$${(parseFloat(p.amount)||0).toLocaleString()}</td>
+              <td><span class="badge ${methClass}">${escHtml(p.method||'—')}</span></td>
             </tr>`;
           }).join('')}
-        </tbody>
-      </table>
-    </div>` : '<div class="empty" style="margin-top:20px"><div class="empty-icon">💸</div><div class="empty-msg">No payments logged yet. Assign contractors to events first, then use "+ Log Payment".</div></div>'}
-  `;
+        </tbody></table>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ════════════════════════════════ FINANCIALS ════════════════════════════════
@@ -6318,7 +6425,8 @@ let plannerView    = 'calendar';                // 'calendar' | 'year'
 let plannerFilter  = 'all';                      // 'all' = every inquiry | 'plan' = booked + plan picks/penciled only
 let plannerMonth   = new Date().getMonth();
 let plannerYear    = new Date().getFullYear();
-let plannerOpenDay = null;                       // ds of the expanded matchup day
+let plannerOpenDay = null;                       // ds of the expanded day panel
+let plannerDayCompare = false;                   // day panel: show head-to-head matchup instead of the list
 let plannerRecView = 'rec';                      // monthly list: 'rec' | 'all'
 let plannerRecSort = 'fit';                      // 'fit' | 'money' | 'date' | 'reach'
 
@@ -6336,8 +6444,9 @@ function isCandidate(inq){
   if(isPassed(inq)) return false;
   const nd = normalizeDate(inq.eventDate);
   if(!nd || nd < new Date().toISOString().split('T')[0]) return false;
-  if(isPenciled(inq)) return true;
+  if(isPenciled(inq)) return true;              // already chosen — never auto-hide
   if(inq._hardFails && inq._hardFails.length) return false;
+  if(inq._isStale) return false;                // too old to be worth chasing (Hue's #4)
   return (inq._stars||0) >= 3 || inq._isVIP;   // 3★+ = worth considering (was 4★ — too strict)
 }
 
@@ -6462,7 +6571,7 @@ function renderPlanner(){
   getMergedEvents().forEach(e=>{ const d=(e.date||e.eventDate||''); if(d){ (bookMap[d]=bookMap[d]||[]).push(e); } });
 
   el.innerHTML = `
-  <div style="max-width:920px;margin:0 auto">
+  <div style="max-width:100%;margin:0 auto">
     ${plannerSummaryBar(t)}
     <div class="cal-toolbar" style="margin-top:10px">
       <button class="cal-nav-btn" onclick="plannerNav(-1)">‹</button>
@@ -6487,19 +6596,78 @@ function renderPlanner(){
         const isToday=ds===todayStr;
         const books=bookMap[ds]||[], inqs=inqMap[ds]||[];
         const contested = plannerFilter!=='plan' && inqs.length>1;   // plan view: multiple picks share a date by design, not a conflict
-        return `<div class="cal-cell${isToday?' today':''}${contested?' conflict-day':''}" ${contested?`onclick="plannerOpenDay='${ds}';renderPlanner()" style="cursor:pointer"`:''}>
+        const total = books.length + inqs.length;
+        const isOpen = plannerOpenDay===ds;
+        // Every day with anything on it is now clickable → opens the full day panel below the grid.
+        const shownBooks = books.slice(0,3);
+        const shownInqs  = inqs.slice(0, Math.max(0, 4 - shownBooks.length));
+        const hidden = total - shownBooks.length - shownInqs.length;
+        return `<div class="cal-cell${isToday?' today':''}${contested?' conflict-day':''}${isOpen?' cal-cell-open':''}" ${total>0?`onclick="openPlannerDay('${ds}')" style="cursor:pointer"`:''}>
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div class="cal-dn">${day}</div>
             ${contested?`<span style="font-size:9px;font-weight:700;color:#fff;background:var(--gold);border-radius:9px;padding:1px 6px">${inqs.length} ⚡</span>`:''}
           </div>
-          ${books.slice(0,2).map(e=>`<div class="cal-pill" style="background:var(--s2);color:var(--muted)" title="${escHtml(e.client||'Booked')}">🔒 ${escHtml(e.client||'Booked')}</div>`).join('')}
-          ${inqs.slice(0,contested?1:(plannerFilter==='plan'?3:2)).map(inq=>plannerChip(inq)).join('')}
-          ${contested?`<div class="cal-more">+${inqs.length-1} more — compare</div>`:''}
+          ${shownBooks.map(e=>`<div class="cal-pill" style="background:var(--s2);color:var(--muted)" title="${escHtml(e.client||'Booked')}">🔒 ${escHtml(e.client||'Booked')}</div>`).join('')}
+          ${shownInqs.map(inq=>plannerChip(inq)).join('')}
+          ${hidden>0?`<div class="cal-more">+${hidden} more — tap to expand</div>`:''}
         </div>`;
       }).join('')}
     </div>
+    ${plannerOpenDay ? renderDayPanel(plannerOpenDay, bookMap[plannerOpenDay]||[], inqMap[plannerOpenDay]||[]) : ''}
     ${plannerRecStrip(yr, mo)}
-    ${plannerOpenDay && (inqMap[plannerOpenDay]||[]).length>1 ? renderMatchup(plannerOpenDay, inqMap[plannerOpenDay]) : ''}
+  </div>`;
+}
+
+// Open a day from the calendar grid — shows the full day panel (all booked events + all
+// inquiries for that date) beneath the grid. Answers Hue's #2: clicking a box now expands.
+function openPlannerDay(ds){ plannerOpenDay = (plannerOpenDay===ds ? null : ds); plannerDayCompare=false; renderPlanner(); if(plannerOpenDay){ setTimeout(()=>{ const p=document.getElementById('day-panel'); if(p) p.scrollIntoView({behavior:'smooth',block:'nearest'}); },30); } }
+function closeDayPanel(){ plannerOpenDay=null; plannerDayCompare=false; renderPlanner(); }
+function toggleDayCompare(){ plannerDayCompare=!plannerDayCompare; renderPlanner(); }
+
+// The expanded day panel: every booked event + every inquiry on the date, each clickable.
+function renderDayPanel(ds, books, inqs){
+  const dlabel = new Date(ds+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  // Head-to-head compare view (reuses the matchup) when there are 2+ inquiries and Hue asked for it
+  if(plannerDayCompare && inqs.length>1) {
+    return `<div id="day-panel">${renderMatchup(ds, inqs)}<div style="text-align:center;margin:-6px 0 10px"><button class="btn btn-outline" onclick="toggleDayCompare()" style="padding:3px 12px;font-size:11px">← Back to day list</button></div></div>`;
+  }
+  const bookRows = books.map(e=>{
+    const cName = [e.contractorName, e.contractorName2].filter(n=>n && n!=='-').join(' + ');
+    const val = e.contractValue || e.grossAmount || 0;
+    return `<div style="display:flex;align-items:center;gap:11px;padding:9px 4px;border-top:1px solid var(--border)">
+      <div style="flex:none;width:22px;text-align:center">🔒</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(e.client||'Booked')} <span style="font-size:11px;color:var(--muted);font-weight:400">· ${escHtml(e.eventType||'Event')}</span></div>
+        <div style="font-size:11px;color:var(--muted)">${escHtml(e.location||'')}${cName?` · 📸 ${escHtml(cName)}`:''}</div>
+      </div>
+      <div style="font-size:12px;font-weight:600;flex:none;color:var(--muted)">${val?planMoney(val):''}</div>
+    </div>`;
+  }).join('');
+  const inqRows = inqs.slice().sort((a,b)=>(b._stars||0)-(a._stars||0)).map(inq=>{
+    const c = planChipClass(inq);
+    const age = inqAgeDays(inq);
+    const ageChip = age!==null ? `<span style="flex:none;font-size:10px;white-space:nowrap;color:${age>45?'var(--red)':age>LATE_REPLY_DAYS?'var(--amber)':'var(--muted2)'}">🕐 ${inqAgeLabel(inq)}</span>` : '';
+    const stale = !!inq._isStale;
+    return `<div style="display:flex;align-items:center;gap:11px;padding:9px 4px;border-top:1px solid var(--border);cursor:pointer" onclick="openDetail('${inq.id}')">
+      <div style="flex:none;width:22px;text-align:center">${inq._hardFails&&inq._hardFails.length?'⛔':isPenciled(inq)?'✓':'📩'}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(inq.name||'Inquiry')} <span style="font-size:11px;color:${c.fg}">${'★'.repeat(inq._stars||0)}</span>${stale?' <span style="font-size:9px;font-weight:700;color:var(--red);background:var(--redbg);border-radius:8px;padding:1px 6px">likely gone</span>':''}</div>
+        <div style="font-size:11px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap">${[escHtml(inq.package||''), inq._miles!=null?inq._miles+'mi':''].filter(Boolean).join(' · ')} ${ageChip}</div>
+      </div>
+      <div style="font-size:12px;font-weight:600;flex:none">${planMoney(planPrice(inq))}</div>
+    </div>`;
+  }).join('');
+  return `<div id="day-panel" class="card" style="margin-top:14px;padding:14px 16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <div style="font-weight:600">${dlabel}</div>
+      <div style="display:flex;gap:8px">
+        ${inqs.length>1?`<button class="btn btn-outline" onclick="toggleDayCompare()" style="padding:2px 10px;font-size:11px">⚖ Compare ${inqs.length}</button>`:''}
+        <button class="btn btn-outline" onclick="closeDayPanel()" style="padding:2px 9px;font-size:11px">✕ Close</button>
+      </div>
+    </div>
+    ${books.length?`<div class="sec-label" style="margin:8px 0 0">🔒 Booked (${books.length})</div>${bookRows}`:''}
+    ${inqs.length?`<div class="sec-label" style="margin:12px 0 0">📩 Inquiries (${inqs.length})</div>${inqRows}`:''}
+    ${!books.length&&!inqs.length?`<div style="font-size:12px;color:var(--muted);padding:8px 0">Nothing on this day.</div>`:''}
   </div>`;
 }
 
@@ -6540,14 +6708,15 @@ function plannerMonthRows(yr, mo){
   // "Worth considering" = not auto-declined and a decent fit (3★+ or VIP). A booked date is
   // NOT a disqualifier (assign another shooter), and losing a date conflict no longer hides it —
   // we just flag the strongest pick on each contested date.
-  const isViable = x => !(x._hardFails && x._hardFails.length) && ((x._stars||0) >= 3 || x._isVIP);
+  const isViable = x => !(x._hardFails && x._hardFails.length) && !(x._isStale && !isPenciled(x)) && ((x._stars||0) >= 3 || x._isVIP);
   return list.map(i=>{
     const nd = normalizeDate(i.eventDate);
     const sameDate = byDate[nd] || [i];
     const hardFail = !!(i._hardFails && i._hardFails.length);
     const belowBar = (i._stars||0) < 3 && !i._isVIP;
-    const viableSelf = !hardFail && !belowBar;
-    const rec = viableSelf;                                  // recommend every decent, non-declined lead
+    const stale    = !!i._isStale && !isPenciled(i);         // too old to chase (Hue's #4) — keep in All, drop from Recommended
+    const viableSelf = !hardFail && !belowBar && !stale;
+    const rec = viableSelf;                                  // recommend every decent, non-declined, non-stale lead
     const winner = sameDate.filter(isViable).sort((a,b)=>(b._score||0)-(a._score||0))[0] || null;
     const bestOnDate = viableSelf && winner && winner.id===i.id && sameDate.filter(isViable).length>1;
     const lauBooked = !!(i._avail && i._avail.laurenBooked);
@@ -6571,6 +6740,7 @@ function recChips(inq){
   if(ageD!==null) out.push(ageD>45 ? {t:'🕐 inquired '+inqAgeLabel(inq), bg:'var(--redbg)', fg:'var(--red)'}
                         : ageD>LATE_REPLY_DAYS ? {t:'🕐 inquired '+inqAgeLabel(inq), bg:'var(--amberbg)', fg:'var(--amber)'}
                         : Object.assign({t:'🕐 '+inqAgeLabel(inq)}, C.def));
+  if(inq._isStale && !isPenciled(inq)) out.push({t:'⏳ likely gone', bg:'var(--redbg)', fg:'var(--red)'});
   if(inq._miles!=null) out.push(Object.assign({t:'📍 '+inq._miles+'mi'}, C.def));
   if(inq._isVIPPlanner)        out.push(Object.assign({t:'👑 VIP planner'}, C.gold));
   else if(inq._isRepeatClient) out.push(Object.assign({t:'🔄 repeat'}, C.gold));
@@ -7028,9 +7198,10 @@ function renderProspective(){
   if(!el) return;
   const year = plannerYear;
   const t = prospectiveTotals(year);
+  // Ordered by event date ascending and grouped under big month headers (Hue's #5) —
+  // undated candidates sort to the very end.
   const cands = plannerCandidates(year).slice().sort((a,b)=>
-    (isPenciled(b)-isPenciled(a)) || ((b._stars||0)-(a._stars||0)) ||
-    ((normalizeDate(a.eventDate)||'').localeCompare(normalizeDate(b.eventDate)||'')));
+    (normalizeDate(a.eventDate)||'9999').localeCompare(normalizeDate(b.eventDate)||'9999'));
   const pencCount = plannerPenciled(year).length;
   const avg = pencCount ? t.penc/pencCount : 0;
   const scale = Math.max(t.goal, t.projected)*1.08 || 1;
@@ -7083,9 +7254,25 @@ function renderProspective(){
       <button class="btn btn-outline" onclick="plannerPreset('clear')" style="padding:4px 11px;font-size:11px">Clear</button>
     </div>
 
-    ${cands.length ? cands.map(inq=>renderCandRow(inq)).join('') :
+    ${cands.length ? renderCandGroups(cands) :
       `<div class="empty" style="padding:40px"><div class="empty-icon">🗓️</div><div class="empty-msg">No recommended open inquiries for ${year} yet.<br><span style="font-size:12px;color:var(--muted)">Candidates are 4★+ inquiries on future dates that aren't booked or declined.</span></div></div>`}
   </div>`;
+}
+
+// Group the date-sorted candidate rows under large month headers so the list reads as
+// distinct months instead of one undifferentiated laundry list (Hue's #5).
+function renderCandGroups(cands){
+  let out = '', curMonth = '';
+  cands.forEach(inq => {
+    const nd = normalizeDate(inq.eventDate);
+    const m = nd ? new Date(nd+'T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'}) : 'Date TBD';
+    if(m !== curMonth){
+      curMonth = m;
+      out += `<div style="font-family:'Cormorant',serif;font-size:23px;font-weight:600;color:var(--gold);margin:24px 0 2px;padding-bottom:5px;border-bottom:2px solid var(--border2)">${m}</div>`;
+    }
+    out += renderCandRow(inq);
+  });
+  return out;
 }
 
 function renderCandRow(inq){
