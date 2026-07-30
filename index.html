@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-11-d  (Session 14: 1-call getAllData load + instant-paint cache · wider calendar & bigger boxes · click any day to expand · inquiry age in detail · Prospective grouped by month · staleness = near event + old inquiry (drops from Recommended) · Team pay history grouped by person) -->
+<!-- VERSION: 2026-07-29-a  (staleness tuning: near-event window 30→45d + absolute 6-month (180d) cap → ancient inquiries like Tara/Gianna drop from Recommended regardless of event date; still visible under All) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1967,8 +1967,10 @@ function score(inq) {
   inq._ageDays        = inqAgeDays(inq);
   const _ndStale      = normalizeDate(inq.eventDate);
   inq._daysUntilEvent = _ndStale ? Math.round((new Date(_ndStale + 'T12:00:00').getTime() - Date.now()) / 86400000) : null;
-  inq._isStale        = inq._ageDays !== null && inq._ageDays > STALE_INQUIRY_DAYS
-                        && inq._daysUntilEvent !== null && inq._daysUntilEvent >= 0 && inq._daysUntilEvent <= STALE_EVENT_NEAR_DAYS;
+  const _future       = inq._daysUntilEvent !== null && inq._daysUntilEvent >= 0;
+  const _oldNearEvent = inq._ageDays !== null && inq._ageDays > STALE_INQUIRY_DAYS && _future && inq._daysUntilEvent <= STALE_EVENT_NEAR_DAYS;
+  const _ancient      = inq._ageDays !== null && inq._ageDays > STALE_ABSOLUTE_DAYS && _future;
+  inq._isStale        = _oldNearEvent || _ancient;
   inq._conflict  = (avail && (avail.severity==='conflict' || avail.laurenBooked)) || false;
   inq._avail     = avail;
   inq._noPlanner = isWedding && noPlanner;
@@ -2906,15 +2908,20 @@ const REPLY_SUBJECT = 'Re: Your Inquiry — In The Moment';
 // How long ago did this person inquire? Replying weeks late without acknowledging
 // it is rude — past LATE_REPLY_DAYS the templates switch to an apology variant.
 const LATE_REPLY_DAYS = 14;
-// Staleness = "too late to bother reaching out" (Hue's #4). It's a GAP judgment, not just
-// age: a lead is stale only when BOTH (a) the event is near — within STALE_EVENT_NEAR_DAYS —
-// AND (b) they inquired a while ago (> STALE_INQUIRY_DAYS). So:
-//   • inquired 3mo ago, event next year  → NOT stale (event far, still worth reaching out)
-//   • inquired 3mo ago, event tomorrow    → STALE (old inquiry + imminent event = booked elsewhere)
-//   • Ashley: inquired 9mo ago, event 2wk → STALE.   • Monica: inquired 3wk ago, event ~1.5wk → NOT stale.
+// Staleness = "too late to bother reaching out" (Hue's #4). A lead is stale if EITHER:
+//   (1) NEAR-EVENT gap: the event is within STALE_EVENT_NEAR_DAYS AND they inquired a while
+//       ago (> STALE_INQUIRY_DAYS) — old inquiry + imminent event = they booked elsewhere; OR
+//   (2) ANCIENT: they inquired more than STALE_ABSOLUTE_DAYS ago (~6 months), dead regardless
+//       of how far out the event is — nobody who inquired half a year ago is still waiting.
+// Examples:
+//   • inquired 3mo ago, event next year  → NOT stale (event far, inquiry under the 6mo cap)
+//   • inquired 3mo ago, event tomorrow    → STALE (near-event arm)
+//   • Ashley 9mo ago / event 2wk, Tara 9mo ago / event ~6wk, Gianna 13mo ago → STALE (ancient arm)
+//   • Monica 3wk ago / event ~1.5wk       → NOT stale (inquiry too recent)
 // Stale leads drop out of Recommended and get a "likely gone" flag, but still show in All / calendar.
-const STALE_INQUIRY_DAYS   = 30;   // inquiry older than ~a month
-const STALE_EVENT_NEAR_DAYS = 30;  // AND event within ~a month
+const STALE_INQUIRY_DAYS    = 30;   // near-event arm: inquiry older than ~a month
+const STALE_EVENT_NEAR_DAYS = 45;   // …AND event within ~6 weeks
+const STALE_ABSOLUTE_DAYS   = 180;  // ancient arm: inquiry older than ~6 months → stale no matter the event date
 function inqAgeDays(inq){
   const t = inq && inq.timestamp ? new Date(inq.timestamp) : null;
   if(!t || isNaN(t.getTime())) return null;
