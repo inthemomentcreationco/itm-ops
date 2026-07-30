@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-29-b  (staleness tuning [30→45d + 6mo cap] · planner strip travel chips: ✈️ Flight / 🚗 Overnight + location + 🌍 International instead of raw miles) -->
+<!-- VERSION: 2026-07-30-a  (geocoding fix: use LocationIQ real country/state (not keyword lists) → correct international/flight/drive; intl forces flight; venue cache→v2 re-resolve. Needs .gs 2026-07-29-a) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -874,7 +874,7 @@ let DATA = {
   payments:         [],
   assignments:      [],
   bookedDates:      [],
-  venueDistances:   JSON.parse(localStorage.getItem('itm_venue_dist') || '{}'),   // resolved venue → {miles,hours,address}
+  venueDistances:   JSON.parse(localStorage.getItem('itm_venue_dist_v2') || '{}'),   // resolved venue → {miles,hours,address,country,state}
   availability:     [],
   retainerIncome:   [],
   adHocPayments:    [],
@@ -1555,27 +1555,35 @@ function buildBookingPrefs(){
 }
 
 // Location desirability (DC home base): DC > VA > International > MD > major US metro > remote.
-// `loc` should be the resolved address when available; `miles` = real geocoded distance (or null).
-function locationTier(loc, miles){
-  const l = String(loc||'').toLowerCase();
-  if(!l || l.length<2) return { pts:9, detail:'No location given' };
-  if(/london|paris|rome|italy|france|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana|tulum|greece|spain|portugal|ireland|tuscany|amalfi|bali|dubai|abroad|international|overseas|costa rica|santorini/i.test(l))
+// PRIMARY signal is LocationIQ's real `country`/`state` (from addressdetails). The keyword regexes
+// below are now only a FALLBACK for when geocoding failed (no country known).
+function locationTier(loc, miles, country, state){
+  const l  = String(loc||'').toLowerCase();
+  const cc = String(country||'').toLowerCase();
+  const st = String(state||'').toLowerCase();
+  // Real geo wins: LocationIQ told us the country outright.
+  if(cc && cc!=='us') return { pts:16, detail:'International — built-in travel + strong marketing' };
+  const knownUS = cc==='us';
+  if(!l && !st) return { pts:9, detail:'No location given' };
+  // Only keyword-guess "international" when we DON'T actually know the country (geocode failed).
+  if(!knownUS && l.length>=2 && /london|paris|rome|italy|france|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana|tulum|greece|spain|portugal|ireland|tuscany|amalfi|bali|dubai|abroad|international|overseas|costa rica|santorini/i.test(l))
     return { pts:16, detail:'International — built-in travel + strong marketing' };
-  if(/washington.?dc|district of columbia|fairmont|dahlgren|georgetown univ|the wharf|union market|hay.?adams|mayflower|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l))
+  if(st==='district of columbia' || /washington.?dc|district of columbia|fairmont|dahlgren|georgetown univ|the wharf|union market|hay.?adams|mayflower|\b(dc|navy yard|capitol hill|dupont|shaw|georgetown|14th|u st|petworth|anacostia|nw|ne|se|sw)\b/i.test(l))
     return { pts:18, detail:'Washington DC — home turf, ideal' };
-  if(/arlington|alexandria|crystal city|clarendon|falls church|mclean|fairfax|reston|herndon|vienna|tysons|\bva\b|virginia|richmond|charlottesville|norfolk|virginia beach|fredericksburg|loudoun|leesburg|middleburg/i.test(l))
+  if(st==='virginia' || /arlington|alexandria|crystal city|clarendon|falls church|mclean|fairfax|reston|herndon|vienna|tysons|\bva\b|virginia|richmond|charlottesville|norfolk|virginia beach|fredericksburg|loudoun|leesburg|middleburg/i.test(l))
     return { pts:16, detail:'Virginia (DMV) — close & preferred' };
-  if(/bethesda|chevy chase|silver spring|takoma|college park|hyattsville|rockville|gaithersburg|germantown|annapolis|baltimore|\bmd\b|maryland|potomac|frederick|columbia md/i.test(l))
+  if(st==='maryland' || /bethesda|chevy chase|silver spring|takoma|college park|hyattsville|rockville|gaithersburg|germantown|annapolis|baltimore|\bmd\b|maryland|potomac|frederick|columbia md/i.test(l))
     return { pts:13, detail:'Maryland (DMV) — close, workable' };
   if(/new york|nyc|manhattan|brooklyn|jersey|philadelphia|philly|boston|chicago|miami|los angeles|\bla\b|santa monica|malibu|beverly|san francisco|bay area|atlanta|nashville|austin|dallas|seattle|denver|new orleans|charleston|savannah|scottsdale|phoenix/i.test(l))
     return { pts:9, detail:'Major US city — far but marketable' };
-  // If we have a REAL geocoded distance, classify by it (handles addresses with state abbreviations)
+  // Real geocoded distance classifies everything else.
   if(miles != null){
     if(miles <= 12)  return { pts:18, detail:'DC area — '+miles+'mi' };
     if(miles <= 60)  return { pts:15, detail:'DMV — close ('+miles+'mi)' };
     if(miles <= 150) return { pts:9,  detail:'Day-trip range ('+miles+'mi)' };
     return { pts:4, detail:'Far ('+miles+'mi) — out of area' };
   }
+  if(st) return { pts:4, detail:'Out of the area ('+String(state)+') — far, less marketing pull' };
   if(/\b(alabama|alaska|arizona|arkansas|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new mexico|ohio|oklahoma|oregon|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|west virginia|wisconsin|wyoming)\b/i.test(l))
     return { pts:4, detail:'Out of the area — far, less marketing pull' };
   // No city/state hint and no geocode — just a venue name. She's DC-based, so assume local.
@@ -1610,13 +1618,15 @@ function parseBudget(str) {
 // No-op / falls back to keyword guessing if LOCATIONIQ_KEY isn't set in Apps Script.
 async function resolveVenueDistances(){
   try {
+    // Re-request any venue we don't have yet OR whose cached entry predates the country/state
+    // upgrade (no `country` field) — so old distance-only entries re-resolve with real geo data.
     const locs = [...new Set((DATA.inquiries||[]).map(i=>(i.location||'').trim()).filter(Boolean))]
-      .filter(t => !DATA.venueDistances[t.toLowerCase().trim()]);
+      .filter(t => { const e = DATA.venueDistances[t.toLowerCase().trim()]; return !e || e.country===undefined; });
     if(!locs.length) return;
     const res = await apiCall('resolveVenues', { locations: locs });
     if(res && res.distances){
       Object.keys(res.distances).forEach(k => { DATA.venueDistances[k.toLowerCase().trim()] = res.distances[k]; });
-      localStorage.setItem('itm_venue_dist', JSON.stringify(DATA.venueDistances));
+      localStorage.setItem('itm_venue_dist_v2', JSON.stringify(DATA.venueDistances));
     }
   } catch(e){ console.warn('Venue distance resolve skipped:', e.message); }
 }
@@ -1647,7 +1657,7 @@ function estimateMiles(loc) {
   if (/miami/i.test(l)) return 1065;
   if (/los angeles|la\b|santa monica|malibu|beverly/i.test(l)) return 2635;
   if (/san francisco|bay area|sf\b/i.test(l)) return 2825;
-  if (/london|paris|rome|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana/i.test(l)) return 5000;
+  if (isIntlLoc(l)) return 5000;   // any international keyword (fallback only — geocoded country is the real signal)
   if (/\bva\b|virginia/i.test(l)) return 85;
   if (/\bmd\b|maryland/i.test(l)) return 32;
   if (/\bpa\b|pennsylvania/i.test(l)) return 185;
@@ -1844,6 +1854,13 @@ function score(inq) {
   const avail = inq.eventDate ? getAvailabilityForDate(inq.eventDate) : null;
   const _vd = DATA.venueDistances && DATA.venueDistances[(inq.location||'').toLowerCase().trim()];
   const travel = getTravelInfo(miles, _vd && _vd.hours);
+  // International = LocationIQ's real country ≠ US (fall back to keyword only when not geocoded).
+  // Anything international always needs a flight, regardless of the estimated mileage.
+  inq._isIntl = (_vd && _vd.country) ? (String(_vd.country).toLowerCase() !== 'us') : isIntlLoc(inq.location);
+  if(inq._isIntl && travel.category !== 'destination'){
+    travel.category = 'destination'; travel.feeNote = 'International — flight + hotel';
+    if(!(travel.feeMin > 0)){ travel.feeMin = 600; travel.feeMax = 1400; }
+  }
   const planner = inq.planner || '';
   const hasPlanner = /planner|coordinator|yes/i.test(planner) && !/no planner|don't have|not yet|considering/i.test(planner);
   const noPlanner = !hasPlanner && (/no planner|don't have|no,|not yet/i.test(planner) || planner.trim().length < 4);
@@ -1890,7 +1907,7 @@ function score(inq) {
   base+=bPts;
 
   // ── 2. LOCATION DESIRABILITY (18) — DC > VA > Intl > MD > major US > remote ──
-  const lt = locationTier((_vd && _vd.address) || loc, (_vd && _vd.miles!=null) ? _vd.miles : null);
+  const lt = locationTier((_vd && _vd.address) || loc, (_vd && _vd.miles!=null) ? _vd.miles : null, _vd && _vd.country, _vd && _vd.state);
   criteria.push({label:'Location (DC home base)',pts:lt.pts,max:18,color:lt.pts>=14?'g':lt.pts>=9?'a':'r',detail:lt.detail});
   base+=lt.pts;
 
@@ -6765,7 +6782,7 @@ function recChips(inq){
   else if(_cat==='overnight drive') out.push(Object.assign({t:'🚗 Overnight'+(_loc?' · '+_loc:'')}, C.def));
   else if(_loc)                     out.push(Object.assign({t:'📍 '+_loc}, C.def));
   else if(inq._miles!=null)         out.push(Object.assign({t:'📍 '+inq._miles+'mi'}, C.def));
-  if(isIntlLoc(inq.location))       out.push({t:'🌍 International', bg:'var(--goldbg)', fg:'var(--gold)'});
+  if(inq._isIntl)                   out.push({t:'🌍 International', bg:'var(--goldbg)', fg:'var(--gold)'});
   if(inq._isVIPPlanner)        out.push(Object.assign({t:'👑 VIP planner'}, C.gold));
   else if(inq._isRepeatClient) out.push(Object.assign({t:'🔄 repeat'}, C.gold));
   else if(!inq._noPlanner && /wedding|multi/i.test(inq.eventType||'')) out.push(Object.assign({t:'✓ planner'}, C.grn));
