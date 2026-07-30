@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-29-a  (staleness tuning: near-event window 30→45d + absolute 6-month (180d) cap → ancient inquiries like Tara/Gianna drop from Recommended regardless of event date; still visible under All) -->
+<!-- VERSION: 2026-07-29-b  (staleness tuning [30→45d + 6mo cap] · planner strip travel chips: ✈️ Flight / 🚗 Overnight + location + 🌍 International instead of raw miles) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6739,6 +6739,16 @@ function sortMonthRows(rows, mode){
     return ((b.inq._score||0)-(a.inq._score||0)) || (a.nd||'').localeCompare(b.nd||'');  // fit
   });
 }
+// Planner-strip travel display helpers (view only — no scoring change).
+// Miles mean nothing to the team, so we show flight/overnight + WHERE instead.
+function shortLoc(loc){
+  var s = String(loc||'').trim().replace(/\s+/g,' ');
+  if(!s) return '';
+  return s.length > 26 ? s.slice(0,25).trim()+'…' : s;
+}
+function isIntlLoc(loc){
+  return /london|paris|rome|italy|france|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana|tulum|greece|spain|portugal|ireland|tuscany|amalfi|bali|dubai|abroad|international|overseas|costa rica|santorini/i.test(String(loc||''));
+}
 function recChips(inq){
   const C = { def:{bg:'var(--s2)',fg:'var(--muted)'}, gold:{bg:'var(--goldbg)',fg:'var(--gold)'}, grn:{bg:'var(--greenbg)',fg:'var(--green)'}, red:{bg:'var(--redbg)',fg:'var(--red)'} };
   const out = [];
@@ -6748,7 +6758,14 @@ function recChips(inq){
                         : ageD>LATE_REPLY_DAYS ? {t:'🕐 inquired '+inqAgeLabel(inq), bg:'var(--amberbg)', fg:'var(--amber)'}
                         : Object.assign({t:'🕐 '+inqAgeLabel(inq)}, C.def));
   if(inq._isStale && !isPenciled(inq)) out.push({t:'⏳ likely gone', bg:'var(--redbg)', fg:'var(--red)'});
-  if(inq._miles!=null) out.push(Object.assign({t:'📍 '+inq._miles+'mi'}, C.def));
+  // Travel: flight/overnight + WHERE, from the already-computed _travel.category (no scoring change).
+  const _cat = (inq._travel && inq._travel.category) || '';
+  const _loc = shortLoc(inq.location);
+  if(_cat==='destination')          out.push({t:'✈️ Flight'+(_loc?' · '+_loc:''), bg:'var(--amberbg)', fg:'var(--amber)'});
+  else if(_cat==='overnight drive') out.push(Object.assign({t:'🚗 Overnight'+(_loc?' · '+_loc:'')}, C.def));
+  else if(_loc)                     out.push(Object.assign({t:'📍 '+_loc}, C.def));
+  else if(inq._miles!=null)         out.push(Object.assign({t:'📍 '+inq._miles+'mi'}, C.def));
+  if(isIntlLoc(inq.location))       out.push({t:'🌍 International', bg:'var(--goldbg)', fg:'var(--gold)'});
   if(inq._isVIPPlanner)        out.push(Object.assign({t:'👑 VIP planner'}, C.gold));
   else if(inq._isRepeatClient) out.push(Object.assign({t:'🔄 repeat'}, C.gold));
   else if(!inq._noPlanner && /wedding|multi/i.test(inq.eventType||'')) out.push(Object.assign({t:'✓ planner'}, C.grn));
