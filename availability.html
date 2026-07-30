@@ -165,20 +165,30 @@ body {
 .cal-day.past { color: var(--muted2); opacity: 0.4; cursor: default; }
 .cal-day.today { border-color: var(--gold); font-weight: 600; }
 .cal-day.free {
-  background: var(--amberbg);
+  background: rgba(230,81,0,0.16);
   border-color: var(--amber);
   color: var(--amber);
-  font-weight: 600;
+  font-weight: 700;
 }
 .cal-day.busy {
-  background: var(--redbg);
+  background: var(--red);
   border-color: var(--red);
-  color: var(--red);
-  font-weight: 600;
+  color: #fff;
+  font-weight: 700;
 }
 .cal-day:active:not(.past):not(.empty) {
   transform: scale(0.92);
 }
+/* Chronological list of all set dates (so you don't scroll month by month) */
+.dl-wrap { margin-top: 18px; }
+.dl-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); text-align: center; margin-bottom: 12px; }
+.dl-group { margin-bottom: 14px; }
+.dl-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 7px; }
+.dl-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dl-chip { font-size: 12px; padding: 4px 9px; border-radius: 8px; cursor: pointer; border: 1px solid; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+.dl-chip.busy { background: var(--red); border-color: var(--red); color: #fff; }
+.dl-chip.free { background: rgba(230,81,0,0.16); border-color: var(--amber); color: var(--amber); }
+.dl-chip:active { transform: scale(0.94); }
 .status-bar {
   position: fixed;
   bottom: 0;
@@ -447,8 +457,8 @@ function availHtml() {
   var html = '';
 
   html += '<div class="legend">'
-    + '<div class="legend-item"><div class="legend-dot" style="background:var(--redbg);border:1px solid var(--red)"></div> Unavailable</div>'
-    + '<div class="legend-item"><div class="legend-dot" style="background:var(--amberbg);border:1px solid var(--amber)"></div> On Hold</div>'
+    + '<div class="legend-item"><div class="legend-dot" style="background:var(--red);border:1px solid var(--red)"></div> Unavailable</div>'
+    + '<div class="legend-item"><div class="legend-dot" style="background:rgba(230,81,0,0.16);border:1px solid var(--amber)"></div> On Hold</div>'
     + '<div class="legend-item"><div class="legend-dot" style="background:var(--s1);border:1px solid var(--border2)"></div> Not set</div>'
     + '</div>';
 
@@ -482,21 +492,55 @@ function availHtml() {
   }
   html += '</div>';
 
-  // Summary
-  var freeCount = 0, busyCount = 0;
+  // Summary + a chronological list of every upcoming set date, so you never have to
+  // page through months to see them all.
+  var busyList = [], freeList = [];
   var allDates = Object.assign({}, savedDates, pendingChanges);
   Object.keys(allDates).forEach(function(dt) {
     if (dt >= today) {
-      if (allDates[dt] === 'free') freeCount++;
-      else if (allDates[dt] === 'busy') busyCount++;
+      if (allDates[dt] === 'free') freeList.push(dt);
+      else if (allDates[dt] === 'busy') busyList.push(dt);
     }
   });
+  busyList.sort();
+  freeList.sort();
   html += '<div style="margin-top:16px;padding:12px;background:var(--s2);border-radius:8px;border:1px solid var(--border);display:flex;justify-content:space-around;text-align:center">'
-    + '<div><div style="font-size:18px;color:var(--red);font-weight:600">' + busyCount + '</div><div style="font-size:10px;color:var(--muted)">Unavailable</div></div>'
-    + '<div><div style="font-size:18px;color:var(--amber);font-weight:600">' + freeCount + '</div><div style="font-size:10px;color:var(--muted)">On Hold</div></div>'
+    + '<div><div style="font-size:18px;color:var(--red);font-weight:600">' + busyList.length + '</div><div style="font-size:10px;color:var(--muted)">Unavailable</div></div>'
+    + '<div><div style="font-size:18px;color:var(--amber);font-weight:600">' + freeList.length + '</div><div style="font-size:10px;color:var(--muted)">On Hold</div></div>'
     + '</div>';
 
+  html += renderDateList(busyList, freeList);
+  html += '<div style="height:80px"></div>'; // clear the fixed Save bar
+
   return html;
+}
+
+function fmtChipDate(ds) {
+  var d = new Date(ds + 'T12:00:00');
+  if (isNaN(d.getTime())) return ds;
+  var opts = { weekday: 'short', month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric'; // show year only when it differs
+  return d.toLocaleDateString('en-US', opts);
+}
+function renderDateList(busyList, freeList) {
+  if (!busyList.length && !freeList.length) return '';
+  var h = '<div class="dl-wrap"><div class="dl-head">All your dates · tap one to jump there</div>';
+  if (busyList.length) {
+    h += '<div class="dl-group"><div class="dl-label" style="color:var(--red)">Unavailable (' + busyList.length + ')</div><div class="dl-chips">';
+    busyList.forEach(function(ds) { h += '<span class="dl-chip busy" onclick="jumpToDate(\'' + ds + '\')">' + fmtChipDate(ds) + '</span>'; });
+    h += '</div></div>';
+  }
+  if (freeList.length) {
+    h += '<div class="dl-group"><div class="dl-label" style="color:var(--amber)">On Hold (' + freeList.length + ')</div><div class="dl-chips">';
+    freeList.forEach(function(ds) { h += '<span class="dl-chip free" onclick="jumpToDate(\'' + ds + '\')">' + fmtChipDate(ds) + '</span>'; });
+    h += '</div></div>';
+  }
+  return h + '</div>';
+}
+function jumpToDate(ds) {
+  var p = ds.split('-');
+  viewMonth = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, 1);
+  render();
 }
 
 function toggleDate(dateStr) {
