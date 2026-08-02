@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-07-30-a  (geocoding fix: use LocationIQ real country/state (not keyword lists) → correct international/flight/drive; intl forces flight; venue cache→v2 re-resolve. Needs .gs 2026-07-29-a) -->
+<!-- VERSION: 2026-08-02-a  (contractor PAID + NO-CHARGE marks now persist to the Sheet (ITM_Financials new cols) + sync cross-device — no more vanishing when you switch Google profiles; one-time backfill recovers existing local marks. Financial GOALS (revenue/take-home/expenses/tax) now sync too. Needs .gs 2026-08-02-a) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -974,7 +974,7 @@ async function apiCall(action, payload) {
 // ════════════════════════════════ PERSIST (config only, no financial data) ════════════════════════════════
 // Settings that should look the same on every device (Hue's Mac, Lauren's phone).
 // Pushed to a Script Property on change, pulled on every sync — last write wins.
-const CFG_SYNC_KEYS = ['revenueGoal','monthlyGoal','monthlyEvents','planMode','reviewLink','contractors'];
+const CFG_SYNC_KEYS = ['revenueGoal','monthlyGoal','monthlyEvents','planMode','reviewLink','contractors','finGoals'];
 
 // ── Roster helpers: CFG.contractors (synced) overrides the hardcoded defaults ──
 function activeContractors(){ return (DATA.contractors||[]).filter(c => c.active !== false); }
@@ -1398,8 +1398,13 @@ async function syncData() {
         planningCall:  r.planningCall,
         deliverables:  r.deliverables||'',
         reviewAsked:   String(r.reviewAsked||''),
+        contractorPaid1:     r.contractorPaid1     || '',
+        contractorPaid2:     r.contractorPaid2     || '',
+        contractorNoCharge1: r.contractorNoCharge1 || '',
+        contractorNoCharge2: r.contractorNoCharge2 || '',
       }));
       localStorage.setItem('itm_historical', JSON.stringify(DATA.historicalEvents));
+      reconcileContractorFlags();
     }
 
     // Load deliverables from dedicated tab
@@ -3689,12 +3694,26 @@ let FIN = {
   ownSalaryGoal:    60000,   // what Lauren wants to take home
 };
 
+// FIN goals (revenue/take-home/expenses/tax rate) now sync cross-device via the
+// shared CFG blob (CFG.finGoals) so Hue's Mac and Lauren's phone always match.
+// localStorage stays as an offline fallback. Synced value wins when present.
+// NOTE: CFG.revenueGoal (Planner/Prospective) and FIN.revenueGoal (Dashboard/
+// Financials) are still two separate numbers by design — consolidating them is a
+// deliberate future cleanup, not silently merged here.
 function loadFin() {
-  const f = localStorage.getItem('itm_fin');
-  if (f) FIN = { ...FIN, ...JSON.parse(f) };
+  try { const f = localStorage.getItem('itm_fin'); if (f) FIN = { ...FIN, ...JSON.parse(f) }; } catch(e){}
+  if (CFG.finGoals && typeof CFG.finGoals === 'object') FIN = { ...FIN, ...CFG.finGoals };
 }
 function saveFin() {
   localStorage.setItem('itm_fin', JSON.stringify(FIN));
+  CFG.finGoals = {
+    annualExpenses: FIN.annualExpenses,
+    taxRate:        FIN.taxRate,
+    hoursPerEvent:  FIN.hoursPerEvent,
+    revenueGoal:    FIN.revenueGoal,
+    ownSalaryGoal:  FIN.ownSalaryGoal,
+  };
+  saveCfg();
 }
 
 function renderFinancials() {
@@ -4080,17 +4099,91 @@ function openMarkContractorPaid(key, name, amount) {
   document.body.appendChild(modal);
 }
 
+// ── CONTRACTOR PAID / NO-CHARGE — server-backed persistence ──────────────────
+// Paid marks and no-charge flags used to live ONLY in localStorage, so they
+// vanished on a different browser/profile or a cache clear. They now persist to
+// ITM_Financials (dedicated columns) via saveContractorFlags and sync everywhere.
+// localStorage stays as an instant-paint cache mirror of the server truth.
+
+// Push a batch of paid/no-charge changes to the Sheet. Returns true on success.
+// paid/noCharge maps: { "<id>_<slot>": value|null }  (null clears the mark).
+async function pushContractorFlags(paid, noCharge) {
+  try {
+    await apiCall('saveContractorFlags', { paid: paid || {}, noCharge: noCharge || {} });
+    return true;
+  } catch (e) {
+    toast('⚠ Saved on this device but NOT to the sheet (offline?). It may not stick — retry when connected.');
+    return false;
+  }
+}
+
+// Reconcile local caches with the Sheet on every sync.
+//  • Before this device has migrated: UNION local+server for the UI, and push any
+//    LOCAL marks the Sheet is missing (this is the one-time recovery — open the
+//    original profile that still has the marks and they get backfilled up).
+//  • After migration: the Sheet is authoritative, so local is rebuilt from it
+//    (an undo on one device then correctly stays undone on the others).
+function reconcileContractorFlags() {
+  try {
+    var migrated = localStorage.getItem('itm_flags_migrated') === '1';
+    var localPaid = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+    var localNo   = JSON.parse(localStorage.getItem('itm_pay_overrides')   || '{}');
+    var srvPaid = {}, srvNo = {};
+    (DATA.historicalEvents || []).forEach(function(r){
+      ['1','2'].forEach(function(s){
+        var pd = r['contractorPaid' + s];
+        if (pd) { try { srvPaid[r.id + '_' + s] = (typeof pd === 'string') ? JSON.parse(pd) : pd; } catch(e){ srvPaid[r.id + '_' + s] = {}; } }
+        var nc = r['contractorNoCharge' + s];
+        if (nc === true || String(nc).toLowerCase() === 'true') srvNo[r.id + '_' + s] = true;
+      });
+    });
+    if (!migrated) {
+      var pushPaid = {}, pushNo = {};
+      Object.keys(localPaid).forEach(function(k){ if (!srvPaid[k]) pushPaid[k] = localPaid[k]; });
+      Object.keys(localNo).forEach(function(k){ if (!srvNo[k]) pushNo[k] = true; });
+      localStorage.setItem('itm_contractor_paid', JSON.stringify(Object.assign({}, srvPaid, localPaid)));
+      localStorage.setItem('itm_pay_overrides',   JSON.stringify(Object.assign({}, srvNo, localNo)));
+      if (Object.keys(pushPaid).length || Object.keys(pushNo).length) {
+        apiCall('saveContractorFlags', { paid: pushPaid, noCharge: pushNo })
+          .then(function(){ localStorage.setItem('itm_flags_migrated', '1'); })
+          .catch(function(){ /* leave unmigrated; retry next sync */ });
+      } else {
+        localStorage.setItem('itm_flags_migrated', '1');
+      }
+    } else {
+      localStorage.setItem('itm_contractor_paid', JSON.stringify(srvPaid));
+      localStorage.setItem('itm_pay_overrides',   JSON.stringify(srvNo));
+    }
+  } catch (e) { /* non-fatal — cache stays as-is */ }
+}
+
 async function confirmContractorPaid(key) {
   const method = document.getElementById('cp-method').value;
   const date   = document.getElementById('cp-date').value;
+  const entry = { date, method, markedAt: new Date().toISOString() };
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
-  paidLog[key] = { date, method, markedAt: new Date().toISOString() };
+  paidLog[key] = entry;
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
+  applyPaidToMemory(key, entry);
   document.getElementById('contractor-paid-modal').remove();
   toast('✓ Marked as paid via ' + method);
   renderFinancials();
   renderDashboard();
   renderContractors();
+  pushContractorFlags({ [key]: entry }, {});
+}
+
+// Mirror a paid/no-charge change into DATA.historicalEvents so a later same-session
+// sync's reconcile sees it as already-on-server and won't re-push it.
+function applyPaidToMemory(key, entry) {
+  const m = String(key).match(/^(.*)_([12])$/); if (!m) return;
+  const row = (DATA.historicalEvents || []).find(r => String(r.id) === m[1]); if (!row) return;
+  row['contractorPaid' + m[2]] = entry ? JSON.stringify(entry) : '';
+}
+function applyNoChargeToMemory(key, on) {
+  const m = String(key).match(/^(.*)_([12])$/); if (!m) return;
+  const row = (DATA.historicalEvents || []).find(r => String(r.id) === m[1]); if (!row) return;
+  row['contractorNoCharge' + m[2]] = on ? 'true' : '';
 }
 
 function toggleSelectAll(toggleId, checked) {
@@ -4146,8 +4239,12 @@ function confirmAllContractorPaid() {
   const method = document.getElementById('cp-method').value;
   const date   = document.getElementById('cp-date').value;
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
+  const batch = {};
   keys.forEach(key => {
-    paidLog[key] = { date, method, markedAt: new Date().toISOString() };
+    const entry = { date, method, markedAt: new Date().toISOString() };
+    paidLog[key] = entry;
+    batch[key] = entry;
+    applyPaidToMemory(key, entry);
   });
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
   document.getElementById('contractor-paid-modal').remove();
@@ -4155,14 +4252,17 @@ function confirmAllContractorPaid() {
   renderFinancials();
   renderDashboard();
   renderContractors();
+  pushContractorFlags(batch, {});
 }
 
 function undoContractorPaid(key) {
   const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid') || '{}');
   delete paidLog[key];
   localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
+  applyPaidToMemory(key, null);
   toast('Payment mark removed');
   renderFinancials();
+  pushContractorFlags({ [key]: null }, {});
 }
 
 function renderFinExpenses(expenses, thisYear) {
@@ -5188,7 +5288,9 @@ function markNoCharge(overrideKey) {
   const overrides = JSON.parse(localStorage.getItem('itm_pay_overrides') || '{}');
   overrides[overrideKey] = true;
   localStorage.setItem('itm_pay_overrides', JSON.stringify(overrides));
+  applyNoChargeToMemory(overrideKey, true);
   renderFinancials();
+  pushContractorFlags({}, { [overrideKey]: true });
 }
 
 // (markVenmoPaid removed 2026-07-04 — dead code, zero callers)
@@ -6296,9 +6398,12 @@ async function savePayment() {
     const cName = ((DATA.contractors||[]).find(c=>c.id===_payContext.contractorId)||{}).name || '';
     const key = checklistKeyFor(_payContext.ev, cName);
     if (key) {
+      const entry = { date, method, markedAt: new Date().toISOString() };
       const paidLog = JSON.parse(localStorage.getItem('itm_contractor_paid')||'{}');
-      paidLog[key] = { date, method };
+      paidLog[key] = entry;
       localStorage.setItem('itm_contractor_paid', JSON.stringify(paidLog));
+      applyPaidToMemory(key, entry);
+      pushContractorFlags({ [key]: entry }, {});
     }
   } catch(e) { /* non-critical */ }
 
