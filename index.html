@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-08-02-c  (planner rework + 3 adds: (1) staleness RECENCY-FIRST; (2) intl geocode US-signal veto; (3) calendar 4 combinable layers; (4) "Inquiry date (newest)" sort; (5) manual "Still active/Gone" lead override (saved to sheet, survives sync, trumps heuristic); (6) detail panel shows the geocoded country/city; (7) "possible duplicate" flag on same name+date leads. Cumulative on -02-a. Needs .gs 2026-08-02-b for the override) -->
+<!-- VERSION: 2026-08-02-d  (adds to -c: PRICING FIX — getMyPrice no longer defaults to the stale $2,400; now falls back to the entry package $2,600 and matches hour-based package descriptions (8hr→2600/10hr→2800/12hr→3200); PKG_PRICE_MAP_2026 corrected 2600/2800/3200. Plus -c: recency staleness, intl geocode veto, 4 calendar layers, inquiry-date sort, manual lead override, geocode display, duplicate flag. Needs .gs 2026-08-02-b for the override) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1617,11 +1617,18 @@ const PACKAGE_HOURS = { "just a little": 8, "happy medium": 10, "full on paparaz
 
 // getPackageHours is defined later (~line 2649) — single definition handles both obj and string args
 
+// 2026 packages: Just a Little Sumthin' (8hr) $2,600 · Happy Medium (10hr) $2,800 ·
+// Full-On Paparazzi (12hr) $3,200. Form answers vary — some pick the package name, some
+// just describe the hours — so match on both, then fall back to the entry package ($2,600).
 function getMyPrice(inq) {
   const pkg = String(inq.package || '').toLowerCase();
   const table = PACKAGE_PRICE.wedding; // same pricing for all event types now
   for (const [k, v] of Object.entries(table)) { if (pkg.includes(k)) return v; }
-  return 2400; // default to entry package
+  // Loose aliases + hour-based descriptions (e.g. "8 hours coverage 9am-5pm").
+  if (/paparazzi|full.?on|12\s*h(ou)?rs?\b|12hr|all.?day/.test(pkg)) return 3200;
+  if (/happy|medium|10\s*h(ou)?rs?\b|10hr/.test(pkg))                return 2800;
+  if (/little|sumthin|somethin|8\s*h(ou)?rs?\b|8hr|half.?day/.test(pkg)) return 2600;
+  return 2600; // no signal → entry package price ($2,600), NOT the old $2,400
 }
 
 function parseBudget(str) {
@@ -4382,9 +4389,9 @@ function getAllContractorOptions(selected) {
 }
 
 const PKG_PRICE_MAP_2026 = {
-  2400: "Just a Little Sumthin'",
-  2600: 'Happy Medium',
-  3000: 'Full-On Paparazzi',
+  2600: "Just a Little Sumthin'",   // 8hr
+  2800: 'Happy Medium',             // 10hr
+  3200: 'Full-On Paparazzi',        // 12hr
 };
 
 function detectPackageFromAmount(grossAmount) {
