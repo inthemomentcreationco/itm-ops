@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-08-02-a  (contractor PAID + NO-CHARGE marks now persist to the Sheet (ITM_Financials new cols) + sync cross-device — no more vanishing when you switch Google profiles; one-time backfill recovers existing local marks. Financial GOALS (revenue/take-home/expenses/tax) now sync too. Needs .gs 2026-08-02-a) -->
+<!-- VERSION: 2026-08-02-c  (planner rework + 3 adds: (1) staleness RECENCY-FIRST; (2) intl geocode US-signal veto; (3) calendar 4 combinable layers; (4) "Inquiry date (newest)" sort; (5) manual "Still active/Gone" lead override (saved to sheet, survives sync, trumps heuristic); (6) detail panel shows the geocoded country/city; (7) "possible duplicate" flag on same name+date leads. Cumulative on -02-a. Needs .gs 2026-08-02-b for the override) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1221,6 +1221,7 @@ async function syncData() {
             source:     get('hear about','referral','referred','source','how did'),
             stage:      get('stage') || 'new',
             planStatus: get('planStatus'),
+            leadOverride: get('leadOverride'),
             nextFollowUp:  get('nextFollowUp'),
             followUpCount: get('followUpCount'),
             _rowIndex:  i + 1,
@@ -1562,13 +1563,24 @@ function buildBookingPrefs(){
 // Location desirability (DC home base): DC > VA > International > MD > major US metro > remote.
 // PRIMARY signal is LocationIQ's real `country`/`state` (from addressdetails). The keyword regexes
 // below are now only a FALLBACK for when geocoding failed (no country known).
+// Does the location TEXT contain an unambiguous US signal? Used to veto a bad geocode:
+// messy addresses (e.g. "St Peter's Church (Barclays street), NYC") sometimes resolve to a
+// foreign country, which would wrongly flag the lead International and inflate its score.
+// If the text plainly says a US place, trust the text over the geocode.
+function hasUSSignal(loc){
+  const l = String(loc||'').toLowerCase();
+  if(!l) return false;
+  return /\busa\b|\bu\.?s\.?a?\.?\b|united states|\bnyc\b|new york|manhattan|brooklyn|the bronx|\bbronx\b|queens|staten island|long island|washington.?dc|\bdc\b|philadelphia|philly|\bboston\b|chicago|\bmiami\b|los angeles|san francisco|bay area|atlanta|nashville|austin|\bdallas\b|seattle|denver|new orleans|charleston|new jersey|\bnj\b|arlington|alexandria|bethesda|annapolis|baltimore|\bny\b|\bva\b|\bmd\b|\bnj\b|\bca\b|\bfl\b|\btx\b|\bpa\b|\bma\b|\bri\b|\bct\b|\bnc\b|\bsc\b|\bga\b|\bil\b|\bdc\b|alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|\biowa\b|kansas|kentucky|louisiana|\bmaine\b|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new mexico|north carolina|north dakota|\bohio\b|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|\btexas\b|\butah\b|vermont|virginia|west virginia|wisconsin|wyoming/i.test(l);
+}
+
 function locationTier(loc, miles, country, state){
   const l  = String(loc||'').toLowerCase();
   const cc = String(country||'').toLowerCase();
   const st = String(state||'').toLowerCase();
-  // Real geo wins: LocationIQ told us the country outright.
-  if(cc && cc!=='us') return { pts:16, detail:'International — built-in travel + strong marketing' };
-  const knownUS = cc==='us';
+  // Real geo wins: LocationIQ told us the country outright — UNLESS the text plainly says a US
+  // place, in which case the geocode mis-resolved an ambiguous address and we trust the text.
+  if(cc && cc!=='us' && !hasUSSignal(l)) return { pts:16, detail:'International — built-in travel + strong marketing' };
+  const knownUS = cc==='us' || hasUSSignal(l);
   if(!l && !st) return { pts:9, detail:'No location given' };
   // Only keyword-guess "international" when we DON'T actually know the country (geocode failed).
   if(!knownUS && l.length>=2 && /london|paris|rome|italy|france|cancun|caribbean|bahamas|jamaica|mexico|bermuda|punta cana|tulum|greece|spain|portugal|ireland|tuscany|amalfi|bali|dubai|abroad|international|overseas|costa rica|santorini/i.test(l))
@@ -1662,7 +1674,7 @@ function estimateMiles(loc) {
   if (/miami/i.test(l)) return 1065;
   if (/los angeles|la\b|santa monica|malibu|beverly/i.test(l)) return 2635;
   if (/san francisco|bay area|sf\b/i.test(l)) return 2825;
-  if (isIntlLoc(l)) return 5000;   // any international keyword (fallback only — geocoded country is the real signal)
+  if (isIntlLoc(l) && !hasUSSignal(l)) return 5000;   // international keyword (fallback only; text US signal vetoes it)
   if (/\bva\b|virginia/i.test(l)) return 85;
   if (/\bmd\b|maryland/i.test(l)) return 32;
   if (/\bpa\b|pennsylvania/i.test(l)) return 185;
@@ -1861,7 +1873,7 @@ function score(inq) {
   const travel = getTravelInfo(miles, _vd && _vd.hours);
   // International = LocationIQ's real country ≠ US (fall back to keyword only when not geocoded).
   // Anything international always needs a flight, regardless of the estimated mileage.
-  inq._isIntl = (_vd && _vd.country) ? (String(_vd.country).toLowerCase() !== 'us') : isIntlLoc(inq.location);
+  inq._isIntl = !hasUSSignal(inq.location) && ((_vd && _vd.country) ? (String(_vd.country).toLowerCase() !== 'us') : isIntlLoc(inq.location));
   if(inq._isIntl && travel.category !== 'destination'){
     travel.category = 'destination'; travel.feeNote = 'International — flight + hotel';
     if(!(travel.feeMin > 0)){ travel.feeMin = 600; travel.feeMax = 1400; }
@@ -1982,17 +1994,23 @@ function score(inq) {
   inq._miles     = miles;
   inq._hardFails = hardFails;
   inq._months    = months;
-  // Staleness (Hue's #4): stale only when the event is NEAR and the inquiry is OLD — see the
-  // STALE_* constants for the reasoning. NOT a hard-fail (no auto-decline); it just drops out
-  // of Recommended and gets a "likely gone" flag. Far-future events are never stale, however
-  // old the inquiry, so early-bird leads for next year still surface.
+  // Staleness (Hue's #4, reworked Aug 2026 to RECENCY-FIRST): staleness is driven by how long
+  // ago they inquired, so a fresher lead is never treated as "more gone" than an older one
+  // (the old gap-based rule had a hard 45-day event cliff that inverted that). See STALE_*.
+  //   stale = (inquired > STALE_INQUIRY_DAYS ago  AND the event is NOT far-future) OR ancient.
+  // Far-future events (> STALE_GRACE_EVENT_DAYS out) get grace — early-bird leads for next year
+  // still surface however old the inquiry, until the ancient hard cap. NOT a hard-fail: it only
+  // drops out of Recommended + gets a "likely gone" flag.
   inq._ageDays        = inqAgeDays(inq);
   const _ndStale      = normalizeDate(inq.eventDate);
   inq._daysUntilEvent = _ndStale ? Math.round((new Date(_ndStale + 'T12:00:00').getTime() - Date.now()) / 86400000) : null;
-  const _future       = inq._daysUntilEvent !== null && inq._daysUntilEvent >= 0;
-  const _oldNearEvent = inq._ageDays !== null && inq._ageDays > STALE_INQUIRY_DAYS && _future && inq._daysUntilEvent <= STALE_EVENT_NEAR_DAYS;
-  const _ancient      = inq._ageDays !== null && inq._ageDays > STALE_ABSOLUTE_DAYS && _future;
-  inq._isStale        = _oldNearEvent || _ancient;
+  const _ageOld    = inq._ageDays !== null && inq._ageDays > STALE_INQUIRY_DAYS;
+  const _farFuture = inq._daysUntilEvent !== null && inq._daysUntilEvent > STALE_GRACE_EVENT_DAYS;
+  const _ancient   = inq._ageDays !== null && inq._ageDays > STALE_ABSOLUTE_DAYS;
+  // Manual override (saved on the sheet) always wins over the automatic rule:
+  // 'alive' = you know they're still in play; 'gone' = you know they booked elsewhere.
+  const _ov = String(inq.leadOverride||'').toLowerCase();
+  inq._isStale = _ov==='alive' ? false : _ov==='gone' ? true : ((_ageOld && !_farFuture) || _ancient);
   inq._conflict  = (avail && (avail.severity==='conflict' || avail.laurenBooked)) || false;
   inq._avail     = avail;
   inq._noPlanner = isWedding && noPlanner;
@@ -2636,6 +2654,7 @@ function openDetail(id) {
         <div class="panel-name">${inq.name||'Unnamed Inquiry'}</div>
         <div style="font-size:12px;color:var(--muted2);margin-top:2px">${evtDate} · ${inq.eventType||'Event'}</div>
         ${(() => { const age=inqAgeDays(inq); if(age===null) return ''; const stale=!!inq._isStale; const col=stale?'var(--red)':age>LATE_REPLY_DAYS?'var(--amber)':'var(--muted2)'; return `<div style="font-size:12px;margin-top:4px;color:${col};font-weight:${stale?600:400}">🕐 Inquired ${inqAgeLabel(inq)}${stale?' — likely booked elsewhere':age>LATE_REPLY_DAYS?' — reply with an apology':''}</div>`; })()}
+        ${(() => { const ov=String(inq.leadOverride||'').toLowerCase(); const btn=(val,label,onCol)=>`<button onclick="event.stopPropagation();setLeadOverride('${inq.id}','${val}')" style="font-size:10px;padding:2px 9px;border-radius:8px;cursor:pointer;border:1px solid ${ov===val?onCol:'var(--border2)'};background:${ov===val?onCol:'transparent'};color:${ov===val?'#fff':'var(--muted)'}">${ov===val?'✓ ':''}${label}</button>`; return `<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap"><span style="font-size:10px;color:var(--muted)">Set status:</span>${btn('alive','Still active','var(--green)')}${btn('gone','Gone','var(--red)')}<span style="font-size:10px;color:var(--muted2)">${ov?'manual — overrides auto':'auto: '+(inq._isStale?'likely gone':'active')}</span></div>`; })()}
       </div>
       <button class="panel-close" onclick="closeDetail()">✕</button>
     </div>
@@ -2689,6 +2708,7 @@ function openDetail(id) {
     </div>
 
     <div class="sec-label" style="margin:14px 0 10px">Travel Analysis</div>
+    ${(() => { const _vd = DATA.venueDistances && DATA.venueDistances[(inq.location||'').toLowerCase().trim()]; if(!_vd || (!_vd.address && !_vd.country)) return ''; const cc=String(_vd.country||'').toUpperCase(); const resolved=_vd.address || [_vd.state||'', cc].filter(Boolean).join(', '); const flagFor=cc && cc!=='US'; return `<div style="font-size:11px;color:${flagFor?'var(--amber)':'var(--muted)'};margin:-4px 0 10px">📍 Geocoded to: ${escHtml(resolved||cc)}${flagFor?' — ⚠ non-US; if that looks wrong the address was ambiguous (score treats it as US when the text says so)':''}</div>`; })()}
     <div class="travel-grid">
       <div class="travel-stat"><div class="travel-stat-lbl">Distance</div><div class="travel-stat-val">~${travel.miles||0}mi</div><div class="travel-stat-sub">from Capitol Hill</div></div>
       <div class="travel-stat"><div class="travel-stat-lbl">Category</div><div class="travel-stat-val" style="font-size:14px;padding-top:3px">${travel.category||'—'}</div></div>
@@ -2930,20 +2950,22 @@ const REPLY_SUBJECT = 'Re: Your Inquiry — In The Moment';
 // How long ago did this person inquire? Replying weeks late without acknowledging
 // it is rude — past LATE_REPLY_DAYS the templates switch to an apology variant.
 const LATE_REPLY_DAYS = 14;
-// Staleness = "too late to bother reaching out" (Hue's #4). A lead is stale if EITHER:
-//   (1) NEAR-EVENT gap: the event is within STALE_EVENT_NEAR_DAYS AND they inquired a while
-//       ago (> STALE_INQUIRY_DAYS) — old inquiry + imminent event = they booked elsewhere; OR
-//   (2) ANCIENT: they inquired more than STALE_ABSOLUTE_DAYS ago (~6 months), dead regardless
-//       of how far out the event is — nobody who inquired half a year ago is still waiting.
-// Examples:
-//   • inquired 3mo ago, event next year  → NOT stale (event far, inquiry under the 6mo cap)
-//   • inquired 3mo ago, event tomorrow    → STALE (near-event arm)
-//   • Ashley 9mo ago / event 2wk, Tara 9mo ago / event ~6wk, Gianna 13mo ago → STALE (ancient arm)
-//   • Monica 3wk ago / event ~1.5wk       → NOT stale (inquiry too recent)
+// Staleness = "too late to bother reaching out" (Hue's #4). RECENCY-FIRST model (Aug 2026):
+// how long ago they inquired is the primary signal, so a fresher lead is NEVER treated as more
+// stale than an older one for the same event date (the old gap-based rule flipped that with a
+// hard 45-day event cliff — a 5-week-old lead read "gone" while 2-month-old ones didn't).
+//   stale = (inquired > STALE_INQUIRY_DAYS ago  AND  the event is NOT far-future)  OR  ancient
+// A far-future event (more than STALE_GRACE_EVENT_DAYS out) gets grace — early-bird leads for
+// next year keep surfacing however old the inquiry — until the ancient hard cap trumps it.
+// Examples (relative to today):
+//   • inquired 5wk ago, event ~4.5wk out  → NOT stale (under the recency threshold)
+//   • inquired 2mo ago, event ~6.5wk out  → STALE (over recency, event not far-future)
+//   • inquired 2mo ago, event 5mo out     → NOT stale (far-future grace)
+//   • inquired 7mo ago, anything          → STALE (ancient cap, grace no longer applies)
 // Stale leads drop out of Recommended and get a "likely gone" flag, but still show in All / calendar.
-const STALE_INQUIRY_DAYS    = 30;   // near-event arm: inquiry older than ~a month
-const STALE_EVENT_NEAR_DAYS = 45;   // …AND event within ~6 weeks
-const STALE_ABSOLUTE_DAYS   = 180;  // ancient arm: inquiry older than ~6 months → stale no matter the event date
+const STALE_INQUIRY_DAYS    = 45;   // recency: inquired more than ~6 weeks ago → probably cold
+const STALE_GRACE_EVENT_DAYS = 120; // …unless the event is still >~4 months out (they have time)
+const STALE_ABSOLUTE_DAYS   = 180;  // ancient cap: inquired >~6 months ago → stale no matter the event date
 function inqAgeDays(inq){
   const t = inq && inq.timestamp ? new Date(inq.timestamp) : null;
   if(!t || isNaN(t.getTime())) return null;
@@ -6551,7 +6573,21 @@ function removeBookedDate(i) { DATA.bookedDates.splice(i,1); saveCfg(); DATA.inq
 // from actually booking the inquiry. Written by _rowIndex like updateInquiryStage.
 
 let plannerView    = 'calendar';                // 'calendar' | 'year'
-let plannerFilter  = 'all';                      // 'all' = every inquiry | 'plan' = booked + plan picks/penciled only
+// Four independent calendar layers you toggle on/off and combine freely. Default = all on
+// (= the old "Everything"). Booked=🔒 events · Recommended=decent non-declined leads ·
+// Penciled=✏ reservations · All=the remaining lower-fit / stale / declined inquiries.
+let plannerLayers = { booked:true, rec:true, penciled:true, all:true };
+function togglePlannerLayer(k){ plannerLayers[k] = !plannerLayers[k]; renderPlanner(); }
+// Which layer bucket does an inquiry belong to? Disjoint: penciled → rec → else "all".
+function inqBucket(i){ return isPenciled(i) ? 'penciled' : (isRecommendedInq(i) ? 'rec' : 'all'); }
+// Is this inquiry a recommended lead? Same rule the monthly list uses (kept in one place so
+// the calendar and the list never disagree): not auto-declined, 3★+ or VIP, not stale.
+function isRecommendedInq(i){
+  const hardFail = !!(i._hardFails && i._hardFails.length);
+  const belowBar = (i._stars||0) < 3 && !i._isVIP;
+  const stale    = !!i._isStale && !isPenciled(i);
+  return !hardFail && !belowBar && !stale;
+}
 let plannerMonth   = new Date().getMonth();
 let plannerYear    = new Date().getFullYear();
 let plannerOpenDay = null;                       // ds of the expanded day panel
@@ -6619,6 +6655,22 @@ async function setPlan(id, status){
 }
 function pencilIn(id){ setPlan(id,'penciled'); }
 function passInq(id){ setPlan(id,'passed'); }
+
+// Manual "still active / gone" override — trumps the staleness heuristic, saved on the sheet
+// (survives sync + cross-device). Toggles off if you tap the same one again.
+async function setLeadOverride(id, val){
+  const inq = (DATA.inquiries||[]).find(i=>i.id===id);
+  if(!inq) return;
+  inq.leadOverride = (String(inq.leadOverride||'').toLowerCase()===val) ? '' : val;
+  score(inq);                          // recompute _isStale with the new override
+  renderPlanner(); renderProspective();
+  if(document.getElementById('detailOverlay').classList.contains('open')) openDetail(id);
+  if(inq._rowIndex){
+    try { await apiCall('updateInquiryOverride', { rowIndex: inq._rowIndex, leadOverride: inq.leadOverride }); }
+    catch(e){ toast('⚠ Saved on this device but not the sheet — retry when connected'); }
+  }
+  toast(inq.leadOverride==='alive' ? '✓ Marked still active' : inq.leadOverride==='gone' ? 'Marked as gone' : 'Override cleared — back to auto');
+}
 function setGoal(v){ CFG.revenueGoal = Math.max(0, parseInt(String(v).replace(/[^0-9]/g,''))||0); saveCfg(); renderProspective(); renderPlanner(); }
 
 // Phase 2 — push the standalone "Year Planner" Google Sheet (server-side mirror for Lauren)
@@ -6684,20 +6736,18 @@ function renderPlanner(){
     const nd = normalizeDate(inq.eventDate); if(!nd) return;
     (inqMap[nd]=inqMap[nd]||[]).push(inq);
   });
-  // "Plan only" lens: keep just the suggested plan's picks + anything penciled —
-  // booked events always show. Everything else disappears from the grid.
-  if(plannerFilter==='plan'){
-    const planRids = new Set();
-    const pfx = `${yr}-${String(mo+1).padStart(2,'0')}`;
-    if(planCurrent && planCurrent.key===pfx) planCurrent.picks.forEach(p=>planRids.add(p.r.inq._rowIndex));
-    (DATA.inquiries||[]).forEach(i=>{ if(isPenciled(i)) planRids.add(i._rowIndex); });
-    Object.keys(inqMap).forEach(ds=>{
-      inqMap[ds] = inqMap[ds].filter(i=>planRids.has(i._rowIndex));
-      if(!inqMap[ds].length) delete inqMap[ds];
-    });
-  }
+  // Layer filter: keep an inquiry only if its bucket's layer is switched on. Buckets are
+  // disjoint (penciled → recommended → all), so the four toggles combine cleanly.
+  Object.keys(inqMap).forEach(ds=>{
+    inqMap[ds] = inqMap[ds].filter(i=>plannerLayers[inqBucket(i)]);
+    if(!inqMap[ds].length) delete inqMap[ds];
+  });
+  // Booked events show only when the Booked layer is on.
   const bookMap = {};
-  getMergedEvents().forEach(e=>{ const d=(e.date||e.eventDate||''); if(d){ (bookMap[d]=bookMap[d]||[]).push(e); } });
+  if(plannerLayers.booked){
+    getMergedEvents().forEach(e=>{ const d=(e.date||e.eventDate||''); if(d){ (bookMap[d]=bookMap[d]||[]).push(e); } });
+  }
+  const anyLayerOff = !(plannerLayers.booked && plannerLayers.rec && plannerLayers.penciled && plannerLayers.all);
 
   el.innerHTML = `
   <div style="max-width:100%;margin:0 auto">
@@ -6707,16 +6757,18 @@ function renderPlanner(){
       <button class="cal-nav-btn" onclick="plannerNav(1)">›</button>
       <button class="cal-today-btn" onclick="plannerToday()">Today</button>
       <div class="cal-month-label">${monthName}</div>
-      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-        <span style="display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden">
-          <button onclick="plannerFilter='all';renderPlanner()" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${plannerFilter==='all'?'var(--gold)':'transparent'};color:${plannerFilter==='all'?'#fff':'var(--muted)'}">Everything</button>
-          <button onclick="plannerFilter='plan';renderPlanner()" style="font-size:11px;padding:4px 11px;border:none;cursor:pointer;background:${plannerFilter==='plan'?'var(--gold)':'transparent'};color:${plannerFilter==='plan'?'#fff':'var(--muted)'}">Plan only</button>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="display:inline-flex;gap:5px;flex-wrap:wrap">
+          ${[['booked','🔒 Booked'],['rec','⭐ Recommended'],['penciled','✏ Penciled'],['all','All']].map(([k,lbl])=>{
+            const on = plannerLayers[k];
+            return `<button onclick="togglePlannerLayer('${k}')" style="font-size:11px;padding:4px 10px;border:1px solid ${on?'var(--gold)':'var(--border2)'};border-radius:8px;cursor:pointer;background:${on?'var(--gold)':'transparent'};color:${on?'#fff':'var(--muted)'}">${on?'✓ ':''}${lbl}</button>`;
+          }).join('')}
         </span>
         <button class="btn btn-gold" style="padding:4px 12px;font-size:11px">Calendar</button>
         <button class="btn btn-outline" onclick="plannerView='year';renderPlanner()" style="padding:4px 12px;font-size:11px">Year</button>
       </div>
     </div>
-    ${plannerFilter==='plan' ? `<div style="font-size:11px;color:var(--muted);margin:2px 2px 6px">Showing 🔒 booked events + the plan only (suggested picks &amp; ✏ penciled). Switch to Everything to see all inquiries.</div>` : ''}
+    ${anyLayerOff ? `<div style="font-size:11px;color:var(--muted);margin:2px 2px 6px">Filtered view — tap the layer chips to combine 🔒 Booked · ⭐ Recommended · ✏ Penciled · All (the remaining lower-fit leads). Turn all four on for the full calendar.</div>` : ''}
     <div class="cal-dow-row">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}</div>
     <div class="cal-body">
       ${Array.from({length:firstDay},()=>`<div class="cal-cell other-month"></div>`).join('')}
@@ -6724,7 +6776,7 @@ function renderPlanner(){
         const day=i+1, ds=`${yr}-${String(mo+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
         const isToday=ds===todayStr;
         const books=bookMap[ds]||[], inqs=inqMap[ds]||[];
-        const contested = plannerFilter!=='plan' && inqs.length>1;   // plan view: multiple picks share a date by design, not a conflict
+        const contested = inqs.length>1;   // 2+ visible inquiries share this date
         const total = books.length + inqs.length;
         const isOpen = plannerOpenDay===ds;
         // Every day with anything on it is now clickable → opens the full day panel below the grid.
@@ -6843,9 +6895,8 @@ function plannerMonthRows(yr, mo){
     const sameDate = byDate[nd] || [i];
     const hardFail = !!(i._hardFails && i._hardFails.length);
     const belowBar = (i._stars||0) < 3 && !i._isVIP;
-    const stale    = !!i._isStale && !isPenciled(i);         // too old to chase (Hue's #4) — keep in All, drop from Recommended
-    const viableSelf = !hardFail && !belowBar && !stale;
-    const rec = viableSelf;                                  // recommend every decent, non-declined, non-stale lead
+    const rec = isRecommendedInq(i);                         // recommend every decent, non-declined, non-stale lead (shared predicate)
+    const viableSelf = rec;
     const winner = sameDate.filter(isViable).sort((a,b)=>(b._score||0)-(a._score||0))[0] || null;
     const bestOnDate = viableSelf && winner && winner.id===i.id && sameDate.filter(isViable).length>1;
     const lauBooked = !!(i._avail && i._avail.laurenBooked);
@@ -6857,6 +6908,11 @@ function sortMonthRows(rows, mode){
   return rows.slice().sort((a,b)=>{
     if(mode==='money') return planPrice(b.inq)-planPrice(a.inq);
     if(mode==='date')  return (a.nd||'').localeCompare(b.nd||'');
+    if(mode==='inquiry'){ // most recent inquiry first; undated inquiries sink to the bottom
+      const ta=a.inq&&a.inq.timestamp?new Date(a.inq.timestamp).getTime():0;
+      const tb=b.inq&&b.inq.timestamp?new Date(b.inq.timestamp).getTime():0;
+      return tb-ta;
+    }
     if(mode==='reach') return (b.inq._followerCount||0)-(a.inq._followerCount||0);
     return ((b.inq._score||0)-(a.inq._score||0)) || (a.nd||'').localeCompare(b.nd||'');  // fit
   });
@@ -6897,7 +6953,17 @@ function recChips(inq){
   if(inq._peakInfo && inq._peakInfo.isSaturday && inq._peakInfo.isPeakMonth) out.push(Object.assign({t:'🔥 peak Sat'}, C.def));
   if(inq._avail && inq._avail.laurenBooked) out.push(Object.assign({t:'👥 needs a 2nd shooter'}, C.def));
   if(inq._noPlanner) out.push(Object.assign({t:'⛔ no planner'}, C.red));
+  if(inq._isDup) out.push({t:'⚠ possible duplicate', bg:'var(--amberbg)', fg:'var(--amber)'});
   return out;
+}
+// Same person (fuzzy name) + same event date appearing more than once in a month — catches
+// double-entered inquiries that slipped past the email-keyed dedupe (e.g. two form submits
+// under different emails). Sets inq._isDup on every row that shares a name+date with another.
+function flagDuplicateInquiries(rows){
+  const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const counts = {};
+  rows.forEach(r => { const k = norm(r.inq.name)+'|'+(r.nd||''); if(norm(r.inq.name)) counts[k]=(counts[k]||0)+1; });
+  rows.forEach(r => { const k = norm(r.inq.name)+'|'+(r.nd||''); r.inq._isDup = counts[k] > 1; });
 }
 function plannerAvailPill(tag, inq){
   let label, bg, fg;
@@ -6947,6 +7013,7 @@ function plannerRecRow(r){
 }
 function plannerRecStrip(yr, mo){
   const rows = plannerMonthRows(yr, mo);
+  flagDuplicateInquiries(rows);
   const recRows = rows.filter(r=>r.rec);
   const view = plannerRecView, sort = plannerRecSort;
   const shown = sortMonthRows(view==='all' ? rows : recRows, sort);
@@ -6955,7 +7022,7 @@ function plannerRecStrip(yr, mo){
   const bookedM = getMergedEvents().filter(e=>{ const dd=(e.date||e.eventDate||''); return dd.slice(0,7)===pfx; }).reduce((s,e)=>s+(e.contractValue||e.grossAmount||0),0);
   const pencM   = rows.filter(r=>isPenciled(r.inq)).reduce((s,r)=>s+planPrice(r.inq),0);
   const recTotal = bookedM + recRows.reduce((s,r)=>s+planPrice(r.inq),0);
-  const sortOpts = [['fit','Best fit'],['money','Highest $'],['date','Soonest date'],['reach','Most followers']];
+  const sortOpts = [['fit','Best fit'],['money','Highest $'],['date','Soonest date'],['inquiry','Inquiry date (newest)'],['reach','Most followers']];
   return `
   ${planPanel(yr, mo)}
   <div style="margin-top:16px">
