@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-08-02-d  (adds to -c: PRICING FIX — getMyPrice no longer defaults to the stale $2,400; now falls back to the entry package $2,600 and matches hour-based package descriptions (8hr→2600/10hr→2800/12hr→3200); PKG_PRICE_MAP_2026 corrected 2600/2800/3200. Plus -c: recency staleness, intl geocode veto, 4 calendar layers, inquiry-date sort, manual lead override, geocode display, duplicate flag. Needs .gs 2026-08-02-b for the override) -->
+<!-- VERSION: 2026-08-02-e  (fix calendar layers to UNION semantics: All is now a master toggle that shows every inquiry + booked event on its own; Booked/Recommended/Penciled are additive subsets. Plus -d: pricing fix; -c: recency staleness, intl geocode veto, 4 calendar layers, inquiry-date sort, manual lead override, geocode display, duplicate flag. Needs .gs 2026-08-02-b for the override) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6580,13 +6580,12 @@ function removeBookedDate(i) { DATA.bookedDates.splice(i,1); saveCfg(); DATA.inq
 // from actually booking the inquiry. Written by _rowIndex like updateInquiryStage.
 
 let plannerView    = 'calendar';                // 'calendar' | 'year'
-// Four independent calendar layers you toggle on/off and combine freely. Default = all on
-// (= the old "Everything"). Booked=🔒 events · Recommended=decent non-declined leads ·
-// Penciled=✏ reservations · All=the remaining lower-fit / stale / declined inquiries.
+// Four calendar layers you toggle on/off and combine (UNION — an item shows if it matches any
+// checked layer). Default = all on. Booked=🔒 official booked events · Recommended=decent
+// non-declined leads · Penciled=✏ reservations · All=MASTER (every inquiry + every booked
+// event; on its own it shows everything, no other chip needed).
 let plannerLayers = { booked:true, rec:true, penciled:true, all:true };
 function togglePlannerLayer(k){ plannerLayers[k] = !plannerLayers[k]; renderPlanner(); }
-// Which layer bucket does an inquiry belong to? Disjoint: penciled → rec → else "all".
-function inqBucket(i){ return isPenciled(i) ? 'penciled' : (isRecommendedInq(i) ? 'rec' : 'all'); }
 // Is this inquiry a recommended lead? Same rule the monthly list uses (kept in one place so
 // the calendar and the list never disagree): not auto-declined, 3★+ or VIP, not stale.
 function isRecommendedInq(i){
@@ -6743,18 +6742,21 @@ function renderPlanner(){
     const nd = normalizeDate(inq.eventDate); if(!nd) return;
     (inqMap[nd]=inqMap[nd]||[]).push(inq);
   });
-  // Layer filter: keep an inquiry only if its bucket's layer is switched on. Buckets are
-  // disjoint (penciled → recommended → all), so the four toggles combine cleanly.
+  // Layer filter (UNION — an item shows if it matches ANY checked layer). "All" is the master:
+  // on its own it shows every inquiry + every booked event, no other chip needed. Booked /
+  // Recommended / Penciled are the specific subsets you can view in isolation or combine.
+  const L = plannerLayers;
+  const inqShows = i => L.all || (L.rec && isRecommendedInq(i)) || (L.penciled && isPenciled(i));
   Object.keys(inqMap).forEach(ds=>{
-    inqMap[ds] = inqMap[ds].filter(i=>plannerLayers[inqBucket(i)]);
+    inqMap[ds] = inqMap[ds].filter(inqShows);
     if(!inqMap[ds].length) delete inqMap[ds];
   });
-  // Booked events show only when the Booked layer is on.
   const bookMap = {};
-  if(plannerLayers.booked){
+  if(L.all || L.booked){
     getMergedEvents().forEach(e=>{ const d=(e.date||e.eventDate||''); if(d){ (bookMap[d]=bookMap[d]||[]).push(e); } });
   }
-  const anyLayerOff = !(plannerLayers.booked && plannerLayers.rec && plannerLayers.penciled && plannerLayers.all);
+  // "Full" view = All is on (it already shows everything). Anything else is a filtered subset.
+  const anyLayerOff = !L.all;
 
   el.innerHTML = `
   <div style="max-width:100%;margin:0 auto">
@@ -6775,7 +6777,7 @@ function renderPlanner(){
         <button class="btn btn-outline" onclick="plannerView='year';renderPlanner()" style="padding:4px 12px;font-size:11px">Year</button>
       </div>
     </div>
-    ${anyLayerOff ? `<div style="font-size:11px;color:var(--muted);margin:2px 2px 6px">Filtered view — tap the layer chips to combine 🔒 Booked · ⭐ Recommended · ✏ Penciled · All (the remaining lower-fit leads). Turn all four on for the full calendar.</div>` : ''}
+    ${anyLayerOff ? `<div style="font-size:11px;color:var(--muted);margin:2px 2px 6px">Filtered view — showing only the checked layers. Tap <b>All</b> to see every inquiry + booked event.</div>` : ''}
     <div class="cal-dow-row">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}</div>
     <div class="cal-body">
       ${Array.from({length:firstDay},()=>`<div class="cal-cell other-month"></div>`).join('')}
