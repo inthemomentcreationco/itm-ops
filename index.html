@@ -1,4 +1,4 @@
-<!-- VERSION: 2026-08-02-e  (fix calendar layers to UNION semantics: All is now a master toggle that shows every inquiry + booked event on its own; Booked/Recommended/Penciled are additive subsets. Plus -d: pricing fix; -c: recency staleness, intl geocode veto, 4 calendar layers, inquiry-date sort, manual lead override, geocode display, duplicate flag. Needs .gs 2026-08-02-b for the override) -->
+<!-- VERSION: 2026-08-02-f  (fix phantom "penciled" count: plannerPenciled now only counts penciled leads that are still live+visible (isCandidate) — a penciled lead that later booked/archived or whose event passed no longer inflates the projection. Plus -e: union calendar layers; -d: pricing fix; -c: recency staleness, intl geocode veto, 4 calendar layers, inquiry-date sort, manual lead override, geocode display, duplicate flag. Needs .gs 2026-08-02-b for the override) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6622,7 +6622,11 @@ function isCandidate(inq){
 }
 
 function plannerCandidates(year){ return (DATA.inquiries||[]).filter(i => isCandidate(i) && (!year || inqYear(i)==String(year))); }
-function plannerPenciled(year){ return (DATA.inquiries||[]).filter(i => isPenciled(i) && (!year || inqYear(i)==String(year))); }
+// Only count a penciled lead if it's still LIVE and visible (isCandidate: not booked/archived/
+// declined, not passed, event still in the future). Without this, a lead you penciled that later
+// booked — or whose event has passed — keeps counting as "penciled" forever even though nothing
+// shows selected, inflating the projection (the Session-14 pencil double-count gap).
+function plannerPenciled(year){ return (DATA.inquiries||[]).filter(i => isPenciled(i) && isCandidate(i) && (!year || inqYear(i)==String(year))); }
 
 function bookedRevenue(year){
   return getMergedEvents().reduce((s,e)=>{
